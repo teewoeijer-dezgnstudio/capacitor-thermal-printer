@@ -29,7 +29,49 @@ export interface BluetoothDevice {
   address: string;
 }
 
-export interface CapacitorThermalPrinterPlugin {
+export interface PrinterConnection extends BluetoothDevice {
+  connectionId: string;
+}
+
+export interface DisconnectOptions {
+  connectionId?: string;
+}
+
+export interface IsConnectedOptions {
+  connectionId?: string;
+}
+
+export interface PrinterSession {
+  bold(enabled?: IsEnabled): PrinterSession;
+  underline(enabled?: IsEnabled): PrinterSession;
+  doubleWidth(enabled?: IsEnabled): PrinterSession;
+  doubleHeight(enabled?: IsEnabled): PrinterSession;
+  inverse(enabled?: IsEnabled): PrinterSession;
+  dpi(dpi: PrinterDPI): PrinterSession;
+  limitWidth(width: number): PrinterSession;
+  align(alignment: PrintAlignment): PrinterSession;
+  charSpacing(charSpacing: number): PrinterSession;
+  lineSpacing(lineSpacing: number): PrinterSession;
+  font(font: PrinterFont): PrinterSession;
+  clearFormatting(): PrinterSession;
+  barcodeWidth(width: number): PrinterSession;
+  barcodeHeight(height: number): PrinterSession;
+  barcodeTextPlacement(placement: BarcodeTextPlacement): PrinterSession;
+  text(text: string): PrinterSession;
+  image(data: Base64Encodable): PrinterSession;
+  qr(data: string): PrinterSession;
+  barcode(type: BarcodeType, data: string): PrinterSession;
+  raw(data: Base64Encodable): PrinterSession;
+  selfTest(): PrinterSession;
+  beep(): PrinterSession;
+  openDrawer(): PrinterSession;
+  cutPaper(half?: boolean): PrinterSession;
+  feedCutPaper(half?: boolean): PrinterSession;
+  begin(): PrinterSession;
+  write(): Promise<void>;
+}
+
+export interface CapacitorThermalPrinterPlugin extends PrinterSession {
   /**
    * @category Connectivity
    */
@@ -41,16 +83,45 @@ export interface CapacitorThermalPrinterPlugin {
   /**
    * @category Connectivity
    */
-  connect(options: { address: string }): Promise<BluetoothDevice | null>;
+  connect(options: { address: string }): Promise<PrinterConnection | null>;
   /**
    * @category Connectivity
    */
-  disconnect(): Promise<void>;
+  disconnect(options?: DisconnectOptions): Promise<void>;
 
   /**
    * @category Connectivity
    */
-  isConnected(): Promise<boolean>;
+  isConnected(options?: IsConnectedOptions): Promise<boolean>;
+
+  /**
+   * Lists all active printer connections.
+   *
+   * @category Connectivity
+   */
+  listConnections(): Promise<{ connections: PrinterConnection[] }>;
+
+  /**
+   * Returns a printer session bound to the provided connection identifier.
+   *
+   * @category Connectivity
+   */
+  useConnection(connectionId: string): PrinterSession;
+
+  /**
+   * Sets the active connection used by builder methods invoked directly on the plugin instance.
+   * Pass `null` to clear the active connection.
+   *
+   * @category Connectivity
+   */
+  setActiveConnection(connectionId: string | null): void;
+
+  /**
+   * Returns the current active connection identifier, if any.
+   *
+   * @category Connectivity
+   */
+  getActiveConnection(): string | null;
 
   /**
    * Emitted when new devices are discovered.
@@ -85,7 +156,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Event Listeners
    */
-  addListener(event: 'connected', handler: (device: BluetoothDevice) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'connected', handler: (device: PrinterConnection) => void): Promise<PluginListenerHandle>;
   /**
    * Emitted when a printer is disconnected.
    *
@@ -94,7 +165,10 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Event Listeners
    */
-  addListener(event: 'disconnected', handler: () => void): Promise<PluginListenerHandle>;
+  addListener(
+    event: 'disconnected',
+    handler: (data: { connectionId: string; address: string; name?: string | null }) => void,
+  ): Promise<PluginListenerHandle>;
 
   //#region Text Formatting
   /**
@@ -107,7 +181,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Text Formatting
    */
-  bold(enabled?: IsEnabled): this;
+  bold(enabled?: IsEnabled): PrinterSession;
   /**
    * Formats following texts as underlined.
    *
@@ -118,7 +192,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Text Formatting
    * */
-  underline(enabled?: IsEnabled): this;
+  underline(enabled?: IsEnabled): PrinterSession;
   /**
    * Formats following texts with double width of each character.
    *
@@ -130,7 +204,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Text Formatting
    */
-  doubleWidth(enabled?: IsEnabled): this;
+  doubleWidth(enabled?: IsEnabled): PrinterSession;
   /**
    * Formats following texts with double height of each character.
    *
@@ -142,7 +216,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Text Formatting
    */
-  doubleHeight(enabled?: IsEnabled): this;
+  doubleHeight(enabled?: IsEnabled): PrinterSession;
 
   /**
    * Formats following texts with inverted colors. (white text on black background)
@@ -154,7 +228,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Text Formatting
    */
-  inverse(enabled?: IsEnabled): this;
+  inverse(enabled?: IsEnabled): PrinterSession;
   //#endregion
 
   //#region Image Formatting
@@ -175,7 +249,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Image Formatting
    */
-  dpi(dpi: PrinterDPI): this;
+  dpi(dpi: PrinterDPI): PrinterSession;
   /**
    * Limits the width of following images.
    *
@@ -191,7 +265,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Image Formatting
    */
-  limitWidth(width: number): this;
+  limitWidth(width: number): PrinterSession;
   //#endregion
 
   //#region Hybrid Formatting
@@ -209,7 +283,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Hybrid Formatting
    */
-  align(alignment: PrintAlignment): this;
+  align(alignment: PrintAlignment): PrinterSession;
   /**
    * Sets the character spacing of following texts and barcode texts.
    *
@@ -225,7 +299,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Hybrid Formatting
    */
-  charSpacing(charSpacing: number): this;
+  charSpacing(charSpacing: number): PrinterSession;
   /**
    * Sets the line spacing of following texts, images, qr codes, barcodes with the given spacing.
    *
@@ -243,7 +317,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Hybrid Formatting
    */
-  lineSpacing(lineSpacing: number): this;
+  lineSpacing(lineSpacing: number): PrinterSession;
   /**
    * Formats following texts and barcode texts with the given font.
    *
@@ -256,13 +330,13 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Hybrid Formatting
    */
-  font(font: PrinterFont): this;
+  font(font: PrinterFont): PrinterSession;
   /**
    * Clears all formatting.
    *
    * @category Hybrid Formatting
    */
-  clearFormatting(): this;
+  clearFormatting(): PrinterSession;
   //#endregion
 
   //#region Data Code Formatting
@@ -280,7 +354,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Barcode Formatting
    */
-  barcodeWidth(width: number): this;
+  barcodeWidth(width: number): PrinterSession;
   /**
    * Sets the height of following barcodes.
    *
@@ -296,7 +370,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Barcode Formatting
    */
-  barcodeHeight(height: number): this;
+  barcodeHeight(height: number): PrinterSession;
   /**
    * Sets the placement of following barcode texts.
    *
@@ -308,7 +382,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Barcode Formatting
    */
-  barcodeTextPlacement(placement: BarcodeTextPlacement): this;
+  barcodeTextPlacement(placement: BarcodeTextPlacement): PrinterSession;
   //#endregion
 
   //#region Content
@@ -322,7 +396,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  text(text: string): this;
+  text(text: string): PrinterSession;
   /**
    * Adds an image to the print queue.
    *
@@ -336,7 +410,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  image(data: Base64Encodable): this;
+  image(data: Base64Encodable): PrinterSession;
   /**
    * Adds a QR code to the print queue.
    *
@@ -344,7 +418,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  qr(data: string): this;
+  qr(data: string): PrinterSession;
   /**
    * Adds a barcode to the print queue.
    *
@@ -358,7 +432,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  barcode(type: BarcodeType, data: string): this;
+  barcode(type: BarcodeType, data: string): PrinterSession;
   /**
    * Adds raw data to the print queue. Use only if you know what you are doing.
    *
@@ -369,7 +443,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  raw(data: Base64Encodable): this;
+  raw(data: Base64Encodable): PrinterSession;
   /**
    * Adds a self-test instruction to the print queue which usually prints general information about the printer and its capabilities.
    *
@@ -378,7 +452,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content
    */
-  selfTest(): this;
+  selfTest(): PrinterSession;
   //#endregion
 
   //#region Content Actions
@@ -390,7 +464,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content Actions
    */
-  beep(): this;
+  beep(): PrinterSession;
   /**
    * Adds an open drawer instruction to the print queue.
    *
@@ -399,7 +473,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content Actions
    */
-  openDrawer(): this;
+  openDrawer(): PrinterSession;
   /**
    * Adds a cut instruction to the print queue.
    *
@@ -413,7 +487,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content Actions
    */
-  cutPaper(half?: boolean): this;
+  cutPaper(half?: boolean): PrinterSession;
   /**
    * Adds a cut instruction to the print queue preceded by a line feed.
    *
@@ -426,7 +500,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Content Actions
    */
-  feedCutPaper(half?: boolean): this;
+  feedCutPaper(half?: boolean): PrinterSession;
   //#endregion
 
   //#region Printing Actions
@@ -438,7 +512,7 @@ export interface CapacitorThermalPrinterPlugin {
    *
    * @category Printing Actions
    */
-  begin(): this;
+  begin(): PrinterSession;
   /**
    * Writes the print queue to the printer.
    *

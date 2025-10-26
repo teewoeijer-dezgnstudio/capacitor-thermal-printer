@@ -1,6 +1,6 @@
 {
-  "name": "capacitor-thermal-printer",
-  "version": "0.2.5",
+  "name": "capacitor-thermal-printer-bluetooth",
+  "version": "0.2.9",
   "description": "High-speed, reliable bluetooth ESC thermal printer and encoder Capacitor plugin.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -15,14 +15,14 @@
     "ios/Bridging-Header.h",
     "CapacitorThermalPrinter.podspec"
   ],
-  "author": "Malik12tree",
+  "author": "teewoeijer-dezgnstudio",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Malik12tree/capacitor-thermal-printer.git"
+    "url": "git+https://github.com/teewoeijer-dezgnstudio/capacitor-thermal-printer.git"
   },
   "bugs": {
-    "url": "https://github.com/Malik12tree/capacitor-thermal-printer/issues"
+    "url": "https://github.com/teewoeijer-dezgnstudio/capacitor-thermal-printer/issues"
   },
   "keywords": [
     "capacitor",

@@ -51,7 +51,11 @@ import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONException;
 
 @CapacitorPlugin(
@@ -80,15 +84,64 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     ArrayList<String> bluetoothPermissions = new ArrayList<>();
 
     ArrayList<BluetoothDevice> devices = new ArrayList<>();
-    private RTPrinter rtPrinter = null;
-    BluetoothEdrConfigBean bluetoothEdrConfigBean = null;
     BroadcastReceiver mBluetoothReceiver = null;
     boolean mRegistered = false;
 
-    Cmd cmd = new EscCmd();
-    TextSetting textSetting = new TextSetting();
-    BitmapSetting bitmapSetting = new BitmapSetting();
-    BarcodeSetting dataCodeSetting = new BarcodeSetting();
+    private final Map<String, ConnectionContext> connectionsById = new ConcurrentHashMap<>();
+    private final Map<String, ConnectionContext> connectionsByAddress = new ConcurrentHashMap<>();
+    private final Map<PrinterInterface, ConnectionContext> connectionsByInterface = new ConcurrentHashMap<>();
+    private final Map<String, ConnectionContext> pendingConnectionsByAddress = new ConcurrentHashMap<>();
+    private final Map<String, PluginCall> pendingConnectCallsById = new ConcurrentHashMap<>();
+
+    private final ThermalPrinterFactory thermalPrinterFactory = new ThermalPrinterFactory();
+
+    private class ConnectionContext {
+        final String connectionId = UUID.randomUUID().toString();
+        final BluetoothDevice device;
+        final BluetoothEdrConfigBean config;
+        final RTPrinter printer;
+        final PrinterInterface printerInterface;
+        String displayName;
+        Cmd cmd;
+        TextSetting textSetting;
+        BitmapSetting bitmapSetting;
+        BarcodeSetting barcodeSetting;
+
+        ConnectionContext(BluetoothDevice device) {
+            this.device = device;
+            this.config = new BluetoothEdrConfigBean(device);
+            this.printer = thermalPrinterFactory.create();
+            this.displayName = device.getName();
+
+            PrinterInterface printerInterface = new BluetoothFactory().create();
+            if (printerInterface == null) {
+                throw new IllegalStateException("Failed to create printer interface");
+            }
+            printerInterface.setConfigObject(this.config);
+            this.printerInterface = printerInterface;
+
+            this.cmd = new EscCmd();
+            this.textSetting = new TextSetting();
+            this.bitmapSetting = new BitmapSetting();
+            this.barcodeSetting = new BarcodeSetting();
+            resetFormattingState();
+        }
+
+        void resetFormattingState() {
+            this.textSetting = new TextSetting();
+            this.bitmapSetting = new BitmapSetting();
+            this.barcodeSetting = new BarcodeSetting();
+            this.bitmapSetting.setBimtapLimitWidth(48 * 8);
+        }
+
+        JSObject toJson() {
+            JSObject obj = new JSObject();
+            obj.put("connectionId", connectionId);
+            obj.put("address", device.getAddress());
+            obj.put("name", displayName);
+            return obj;
+        }
+    }
 
     private class BluetoothDeviceReceiver extends BroadcastReceiver {
 
@@ -135,8 +188,6 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     public CapacitorThermalPrinterPlugin() {
         super();
         PrinterObserverManager.getInstance().add(this);
-        ThermalPrinterFactory printerFactory = new ThermalPrinterFactory();
-        rtPrinter = printerFactory.create();
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             bluetoothPermissions.add("BLUETOOTH");
@@ -156,10 +207,118 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     protected void handleOnDestroy() {
         super.handleOnDestroy();
 
-        getContext().unregisterReceiver(mBluetoothReceiver);
-        mRegistered = false;
+        if (mRegistered && mBluetoothReceiver != null) {
+            try {
+                getContext().unregisterReceiver(mBluetoothReceiver);
+            } catch (IllegalArgumentException ignored) {
+                // Receiver already unregistered.
+            }
+            mRegistered = false;
+            mBluetoothReceiver = null;
+        }
+
+        for (ConnectionContext context : connectionsById.values()) {
+            try {
+                context.printer.disConnect();
+            } catch (Exception ignored) {
+                // Ignore teardown errors.
+            }
+        }
+
+        connectionsById.clear();
+        connectionsByAddress.clear();
+        connectionsByInterface.clear();
+        pendingConnectionsByAddress.clear();
+        pendingConnectCallsById.clear();
 
         PrinterObserverManager.getInstance().remove(this);
+    }
+
+    private ConnectionContext resolveContext(PluginCall call, boolean requireConnected) {
+        String connectionId = call.getString("connectionId");
+        ConnectionContext context = null;
+
+        if (connectionId != null) {
+            context = connectionsById.get(connectionId);
+        } else if (connectionsById.size() == 1) {
+            Iterator<ConnectionContext> iterator = connectionsById.values().iterator();
+            if (iterator.hasNext()) {
+                context = iterator.next();
+            }
+        }
+
+        if (context == null) {
+            call.reject("Unknown printer connection. Provide a valid connectionId.");
+            return null;
+        }
+
+        if (requireConnected && context.printer.getConnectState() != ConnectStateEnum.Connected) {
+            call.reject("Printer is not connected!");
+            return null;
+        }
+
+        return context;
+    }
+
+    private void applyDefaultFormatting(ConnectionContext context) {
+        context.resetFormattingState();
+        applyAlignment(context, CommonEnum.ALIGN_LEFT);
+        applyLineSpacing(context, 30);
+        applyCharSpacing(context, 1);
+    }
+
+    private void applyAlignment(ConnectionContext context, int alignment) {
+        if (alignment > 2 || alignment < 0) alignment = 0;
+
+        context.cmd.append(new byte[] { 27, 97, (byte) alignment });
+    }
+
+    private void applyLineSpacing(ConnectionContext context, int spacing) {
+        if (spacing < 0) spacing = 0;
+        if (spacing > 255) spacing = 255;
+
+        context.cmd.append(new byte[] { 27, 51, (byte) spacing });
+    }
+
+    private void applyCharSpacing(ConnectionContext context, int spacing) {
+        if (spacing < 0) spacing = 0;
+        if (spacing > 30) spacing = 30;
+
+        context.cmd.append(new byte[] { 27, 32, (byte) spacing });
+    }
+
+    private boolean isContextConnected(ConnectionContext context) {
+        if (context == null) {
+            return false;
+        }
+
+        if (context.printer.getConnectState() != ConnectStateEnum.Connected) {
+            return false;
+        }
+
+        try {
+            context.printer.writeMsg(new byte[] {});
+        } catch (Exception ignored) {
+            return false;
+        }
+
+        return context.printer.getConnectState() == ConnectStateEnum.Connected;
+    }
+
+    private JSObject buildDisconnectedPayload(ConnectionContext context) {
+        JSObject payload = new JSObject();
+        payload.put("connectionId", context.connectionId);
+        payload.put("address", context.device.getAddress());
+        payload.put("name", context.displayName);
+        return payload;
+    }
+
+    private void removeContext(ConnectionContext context) {
+        connectionsById.remove(context.connectionId);
+        connectionsByAddress.remove(context.device.getAddress());
+        connectionsByInterface.remove(context.printerInterface);
+        pendingConnectionsByAddress.remove(context.device.getAddress());
+        pendingConnectCallsById.remove(context.connectionId);
     }
 
     @PluginMethod
@@ -205,12 +364,19 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
 
     @PluginMethod
     public void isConnected(PluginCall call) {
-        boolean state = rtPrinter.getConnectState() == ConnectStateEnum.Connected;
+        String connectionId = call.getString("connectionId");
+        boolean state;
 
-        if (state) {
-            rtPrinter.writeMsg(new byte[]{});
-
-            state = rtPrinter.getConnectState() == ConnectStateEnum.Connected;
+        if (connectionId != null) {
+            state = isContextConnected(connectionsById.get(connectionId));
+        } else {
+            state = false;
+            for (ConnectionContext context : connectionsById.values()) {
+                if (isContextConnected(context)) {
+                    state = true;
+                    break;
+                }
+            }
         }
 
         boolean finalState = state;
@@ -219,80 +385,134 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         }});
     }
 
-
-    private PluginCall currentConnectCallbacks = null;
-
     @SuppressLint("MissingPermission")
     @PluginMethod
     public void connect(PluginCall call) {
         if (!bluetoothCheck(call)) return;
-        if (currentConnectCallbacks != null) {
-            call.reject("Printer already connecting!");
-            return;
-        }
-
         String address = call.getString("address");
         if (address == null) {
             call.reject("Please provide address!");
             return;
         }
 
+        ConnectionContext existing = connectionsByAddress.get(address);
+        if (existing != null && existing.printer.getConnectState() == ConnectStateEnum.Connected) {
+            call.resolve(existing.toJson());
+            return;
+        }
+
+        if (pendingConnectionsByAddress.containsKey(address)) {
+            call.reject("Printer already connecting!");
+            return;
+        }
+
         BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
         Log.d(TAG, "Connecting to " + device);
 
-        bluetoothEdrConfigBean = new BluetoothEdrConfigBean(device);
-
-        PIFactory piFactory = new BluetoothFactory();
-        PrinterInterface printerInterface = piFactory.create();
-        printerInterface.setConfigObject(bluetoothEdrConfigBean);
-        rtPrinter.setPrinterInterface(printerInterface);
+        ConnectionContext context;
         try {
-            currentConnectCallbacks = call;
-            rtPrinter.connect(bluetoothEdrConfigBean);
+            context = new ConnectionContext(device);
+        } catch (IllegalStateException e) {
+            call.reject("Failed to create printer interface!");
+            return;
+        }
+        pendingConnectionsByAddress.put(address, context);
+        pendingConnectCallsById.put(context.connectionId, call);
+        connectionsByInterface.put(context.printerInterface, context);
+
+        context.printer.setPrinterInterface(context.printerInterface);
+        try {
+            context.printer.connect(context.config);
         } catch (Exception e) {
-            // unreachable!
+            removeContext(context);
             call.reject("Failed to connect!");
         }
     }
 
     @PluginMethod
     public void disconnect(PluginCall call) {
-        if (rtPrinter != null && rtPrinter.getConnectState() == ConnectStateEnum.Connected) {
-            rtPrinter.disConnect();
+        ConnectionContext context = resolveContext(call, false);
+        if (context == null) {
+            return;
+        }
+
+        if (context.printer.getConnectState() == ConnectStateEnum.Connected) {
+            context.printer.disConnect();
             call.resolve();
         } else {
             call.reject("Not Connected!");
         }
     }
 
+    @PluginMethod
+    public void listConnections(PluginCall call) {
+        JSArray array = new JSArray();
+        ArrayList<ConnectionContext> disconnectedContexts = new ArrayList<>();
+
+        for (ConnectionContext context : connectionsById.values()) {
+            if (!isContextConnected(context)) {
+                disconnectedContexts.add(context);
+                continue;
+            }
+
+            array.put(context.toJson());
+        }
+
+        for (ConnectionContext context : disconnectedContexts) {
+            JSObject payload = buildDisconnectedPayload(context);
+            removeContext(context);
+            context.printer.setPrinterInterface(null);
+            notifyListeners("disconnected", payload);
+        }
+
+        call.resolve(new JSObject() {{
+            put("connections", array);
+        }});
+    }
+
     //region Text Formatting
     @PluginMethod
     public void bold(PluginCall call) {
-        textSetting.setBold(parseIsEnabled(call));
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.textSetting.setBold(parseIsEnabled(call));
         call.resolve();
     }
 
     @PluginMethod
     public void underline(PluginCall call) {
-        textSetting.setUnderline(parseIsEnabled(call));
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.textSetting.setUnderline(parseIsEnabled(call));
         call.resolve();
     }
 
     @PluginMethod
     public void doubleWidth(PluginCall call) {
-        textSetting.setDoubleWidth(parseIsEnabled(call));
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.textSetting.setDoubleWidth(parseIsEnabled(call));
         call.resolve();
     }
 
     @PluginMethod
     public void doubleHeight(PluginCall call) {
-        textSetting.setDoubleHeight(parseIsEnabled(call));
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.textSetting.setDoubleHeight(parseIsEnabled(call));
         call.resolve();
     }
 
     @PluginMethod
     public void inverse(PluginCall call) {
-        textSetting.setIsAntiWhite(parseIsEnabled(call));
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.textSetting.setIsAntiWhite(parseIsEnabled(call));
         call.resolve();
     }
 
@@ -301,63 +521,40 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     //region Image Formatting
     @PluginMethod
     public void dpi(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         Integer dpi = call.getInt("dpi");
         if (dpi == null) {
             dpi = 0;
         }
 
-        bitmapSetting.setBmpDpi(dpi);
+        context.bitmapSetting.setBmpDpi(dpi);
         call.resolve();
     }
 
     @PluginMethod
     public void limitWidth(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         Integer width = call.getInt("width");
         if (width == null) {
             width = 0;
         }
 
-        bitmapSetting.setBimtapLimitWidth(width * 8);
+        context.bitmapSetting.setBimtapLimitWidth(width * 8);
         call.resolve();
     }
 
     //    endregion
 
     //region Hybrid Formatting
-    public void align() {
-        align(CommonEnum.ALIGN_LEFT);
-    }
-
-    public void lineSpacing() {
-        lineSpacing(30);
-    }
-
-    public void charSpacing() {
-        charSpacing(1);
-    }
-
-    public void align(int alignment) {
-        if (alignment > 2 || alignment < 0) alignment = 0;
-
-        cmd.append(new byte[] { 27, 97, (byte) alignment });
-    }
-
-    public void lineSpacing(int spacing) {
-        if (spacing < 0) spacing = 0;
-        if (spacing > 255) spacing = 255;
-
-        cmd.append(new byte[] { 27, 51, (byte) spacing });
-    }
-
-    public void charSpacing(int spacing) {
-        if (spacing < 0) spacing = 0;
-        if (spacing > 30) spacing = 30;
-
-        cmd.append(new byte[] { 27, 32, (byte) spacing });
-    }
-
     @PluginMethod
     public void align(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String alignmentName = call.getString("alignment");
         int alignment = alignments.indexOf(alignmentName);
         if (alignment == -1) {
@@ -365,26 +562,35 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             return;
         }
 
-        this.align(alignment);
+        applyAlignment(context, alignment);
         call.resolve();
     }
 
     @PluginMethod
     public void lineSpacing(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         int spacing = call.getInt("lineSpacing", 0);
-        lineSpacing(spacing);
+        applyLineSpacing(context, spacing);
         call.resolve();
     }
 
     @PluginMethod
     public void charSpacing(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         int spacing = call.getInt("charSpacing", 0);
-        charSpacing(spacing);
+        applyCharSpacing(context, spacing);
         call.resolve();
     }
 
     @PluginMethod
     public void font(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String fontName = call.getString("font", "A");
         int font = fonts.indexOf(fontName);
         if (font == -1) {
@@ -392,22 +598,17 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             return;
         }
 
-        textSetting.setEscFontType(fontEnumValues[font]);
-        dataCodeSetting.setEscBarcodFont(dataFontEnumValues[font]);
+        context.textSetting.setEscFontType(fontEnumValues[font]);
+        context.barcodeSetting.setEscBarcodFont(dataFontEnumValues[font]);
         call.resolve();
     }
 
     @PluginMethod
     public void clearFormatting(PluginCall call) {
-        textSetting = new TextSetting();
-        bitmapSetting = new BitmapSetting();
-        dataCodeSetting = new BarcodeSetting();
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
 
-        bitmapSetting.setBimtapLimitWidth(48 * 8);
-        // Reset Action Formatters
-        this.align();
-        this.lineSpacing();
-        this.charSpacing();
+        applyDefaultFormatting(context);
         call.resolve();
     }
 
@@ -417,21 +618,30 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
 
     @PluginMethod
     public void barcodeWidth(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         Integer width = call.getInt("width", 0);
-        if (width != null) dataCodeSetting.setBarcodeWidth(width);
+        if (width != null) context.barcodeSetting.setBarcodeWidth(width);
         call.resolve();
     }
 
     @PluginMethod
     public void barcodeHeight(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         Integer height = call.getInt("height");
-        if (height != null) dataCodeSetting.setHeightInDot(height);
+        if (height != null) context.barcodeSetting.setHeightInDot(height);
 
         call.resolve();
     }
 
     @PluginMethod
     public void barcodeTextPlacement(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String placementName = call.getString("placement");
         int placement = placements.indexOf(placementName);
         if (placement == -1) {
@@ -439,7 +649,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             return;
         }
 
-        dataCodeSetting.setBarcodeStringPosition(placementEnumValues[placement]);
+        context.barcodeSetting.setBarcodeStringPosition(placementEnumValues[placement]);
         call.resolve();
     }
 
@@ -448,10 +658,13 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     //region Content
     @PluginMethod
     public void text(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String text = call.getString("text");
 
         try {
-            if (text != null) cmd.append(cmd.getTextCmd(textSetting, text, "UTF-8"));
+            if (text != null) context.cmd.append(context.cmd.getTextCmd(context.textSetting, text, "UTF-8"));
         } catch (UnsupportedEncodingException ignored) {}
         call.resolve();
     }
@@ -459,14 +672,19 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @RequiresApi(api = Build.VERSION_CODES.O)
     @PluginMethod
     public void image(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String image = call.getString("image");
 
-        bitmapSetting.setBmpPrintMode(BmpPrintMode.MODE_SINGLE_COLOR);
+        context.bitmapSetting.setBmpPrintMode(BmpPrintMode.MODE_SINGLE_COLOR);
 
         try {
             if (image != null) {
                 byte[] d = Base64.getDecoder().decode(image.substring(image.indexOf(",") + 1));
-                cmd.append(cmd.getBitmapCmd(bitmapSetting, BitmapFactory.decodeByteArray(d, 0, d.length)));
+                context.cmd.append(
+                    context.cmd.getBitmapCmd(context.bitmapSetting, BitmapFactory.decodeByteArray(d, 0, d.length))
+                );
             }
         } catch (SdkException ignored) {}
         call.resolve();
@@ -475,10 +693,13 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @RequiresApi(api = Build.VERSION_CODES.O)
     @PluginMethod
     public void raw(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String base64 = call.getString("data");
         if (base64 != null) {
             try {
-                cmd.append(Base64.getDecoder().decode(base64));
+                context.cmd.append(Base64.getDecoder().decode(base64));
             } catch (Exception ignored) {
                 call.reject("Invalid Base64");
                 return;
@@ -503,21 +724,27 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             }
         }
 
-        cmd.append(data);
+        context.cmd.append(data);
         call.resolve();
     }
 
     @PluginMethod
     public void qr(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String data = call.getString("data", "");
         try {
-            cmd.append(cmd.getBarcodeCmd(BarcodeType.QR_CODE, dataCodeSetting, data));
+            context.cmd.append(context.cmd.getBarcodeCmd(BarcodeType.QR_CODE, context.barcodeSetting, data));
         } catch (SdkException ignored) {}
         call.resolve();
     }
 
     @PluginMethod
     public void barcode(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         String typeName = call.getString("type");
 
         BarcodeType type;
@@ -535,7 +762,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         String data = call.getString("data", "");
 
         try {
-            cmd.append(cmd.getBarcodeCmd(type, dataCodeSetting, data));
+            context.cmd.append(context.cmd.getBarcodeCmd(type, context.barcodeSetting, data));
         } catch (SdkException ignored) {}
 
         call.resolve();
@@ -543,7 +770,10 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
 
     @PluginMethod
     public void selfTest(PluginCall call) {
-        cmd.append(cmd.getSelfTestCmd());
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.cmd.append(context.cmd.getSelfTestCmd());
         call.resolve();
     }
 
@@ -552,28 +782,42 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     //region Content Actions
     @PluginMethod
     public void beep(PluginCall call) {
-        cmd.append(cmd.getBeepCmd());
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.cmd.append(context.cmd.getBeepCmd());
         call.resolve();
     }
 
     @PluginMethod
     public void openDrawer(PluginCall call) {
-        cmd.append(cmd.getOpenMoneyBoxCmd());
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.cmd.append(context.cmd.getOpenMoneyBoxCmd());
         call.resolve();
     }
 
     @PluginMethod
     public void cutPaper(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
         boolean half = Boolean.TRUE.equals(call.getBoolean("half", false));
-        cmd.append(half ? cmd.getHalfCutCmd() : cmd.getAllCutCmd());
+        context.cmd.append(half ? context.cmd.getHalfCutCmd() : context.cmd.getAllCutCmd());
 
         call.resolve();
     }
 
     @PluginMethod
     public void feedCutPaper(PluginCall call) {
-        cmd.append(new byte[] { (byte) '\n' });
-        cutPaper(call);
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        boolean half = Boolean.TRUE.equals(call.getBoolean("half", false));
+        context.cmd.append(new byte[] { (byte) '\n' });
+        context.cmd.append(half ? context.cmd.getHalfCutCmd() : context.cmd.getAllCutCmd());
+        call.resolve();
     }
 
     //endregion
@@ -581,13 +825,20 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     //region Printing Actions
     @PluginMethod
     public void begin(PluginCall call) {
-        cmd = new EscCmd();
-        clearFormatting(call);
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        context.cmd = new EscCmd();
+        applyDefaultFormatting(context);
+        call.resolve();
     }
 
     @PluginMethod
     public void write(PluginCall call) {
-        _writeRaw(call, cmd.getAppendCmds());
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null) return;
+
+        _writeRaw(call, context, context.cmd.getAppendCmds());
     }
 
     //endregion
@@ -602,8 +853,9 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         return enabled ? SettingEnum.Enable : SettingEnum.Disable;
     }
 
-    private void _writeRaw(PluginCall call, byte[] data) {
-        if (rtPrinter.getPrinterInterface() == null || rtPrinter.getPrinterInterface().getConnectState() != ConnectStateEnum.Connected) {
+    private void _writeRaw(PluginCall call, ConnectionContext context, byte[] data) {
+        PrinterInterface printerInterface = context.printer.getPrinterInterface();
+        if (printerInterface == null || printerInterface.getConnectState() != ConnectStateEnum.Connected) {
             call.reject("Printer is not connected!");
             return;
         }
@@ -617,7 +869,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         escCmd.append(escCmd.getLFCRCmd());
         escCmd.append(escCmd.getLFCRCmd());
         escCmd.append(escCmd.getEndCmd());
-        rtPrinter.writeMsgAsync(escCmd.getAppendCmds());
+        context.printer.writeMsgAsync(escCmd.getAppendCmds());
         call.resolve();
     }
 
@@ -687,34 +939,54 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @SuppressLint("MissingPermission")
     @Override
     public void printerObserverCallback(PrinterInterface printerInterface, int state) {
-        JSObject deviceJSON = printerInterface != null ? new JSObject() {{
-            BluetoothEdrConfigBean config = ((BluetoothEdrConfigBean)printerInterface.getConfigObject());
-            put("address", config.mBluetoothDevice.getAddress());
-            put("name", config.mBluetoothDevice.getName());
-        }}: null;
+        if (printerInterface == null) {
+            return;
+        }
 
-        Log.d(TAG, "STATE CHANGE " + state);
+        ConnectionContext context = connectionsByInterface.get(printerInterface);
+        if (context == null) {
+            return;
+        }
+
+        Log.d(TAG, "STATE CHANGE " + state + " for " + context.device.getAddress());
         switch (state) {
             case CommonEnum.CONNECT_STATE_SUCCESS:
-                rtPrinter.setPrinterInterface(printerInterface);
+                context.printer.setPrinterInterface(printerInterface);
+                BluetoothEdrConfigBean config = (BluetoothEdrConfigBean) printerInterface.getConfigObject();
+                if (config != null && config.mBluetoothDevice != null) {
+                    context.displayName = config.mBluetoothDevice.getName();
+                }
+                connectionsById.put(context.connectionId, context);
+                connectionsByAddress.put(context.device.getAddress(), context);
+                pendingConnectionsByAddress.remove(context.device.getAddress());
 
-                if (currentConnectCallbacks != null) {
-                    currentConnectCallbacks.resolve(deviceJSON);
-                    currentConnectCallbacks = null;
+                PluginCall pendingCall = pendingConnectCallsById.remove(context.connectionId);
+                JSObject connectedPayload = context.toJson();
+                if (pendingCall != null) {
+                    pendingCall.resolve(connectedPayload);
                 }
 
-                notifyListeners("connected", deviceJSON);
-
+                notifyListeners("connected", connectedPayload);
                 break;
             case CommonEnum.CONNECT_STATE_INTERRUPTED:
-                rtPrinter.setPrinterInterface(null);
+                boolean pending = pendingConnectCallsById.containsKey(context.connectionId);
+                PluginCall pendingConnect = pendingConnectCallsById.remove(context.connectionId);
 
-                if (currentConnectCallbacks != null) {
-                    currentConnectCallbacks.resolve(null);
-                    currentConnectCallbacks = null;
+                JSObject disconnectedPayload = buildDisconnectedPayload(context);
+
+                removeContext(context);
+                context.printer.setPrinterInterface(null);
+                connectionsByInterface.remove(printerInterface);
+
+                if (pending) {
+                    if (pendingConnect != null) {
+                        pendingConnect.resolve(null);
+                    }
                 } else {
-                    notifyListeners("disconnected", null);
+                    notifyListeners("disconnected", disconnectedPayload);
                 }
+                break;
+            default:
                 break;
         }
     }

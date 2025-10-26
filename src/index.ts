@@ -1,6 +1,13 @@
 import { registerPlugin } from '@capacitor/core';
 
-import type { CapacitorThermalPrinterPlugin, Base64Encodable } from './definitions';
+import type {
+  Base64Encodable,
+  CapacitorThermalPrinterPlugin,
+  DisconnectOptions,
+  IsConnectedOptions,
+  PrinterConnection,
+  PrinterSession,
+} from './definitions';
 import { WrappedMethodsArgsMap, WrappedMethodsMiddlewareMap } from './private-definitions';
 import CallablePromise from './utils/CallablePromise';
 import Encoding from './utils/Encoding';
@@ -76,57 +83,188 @@ function mapArgs(key: string, args: any[]) {
   // @ts-ignore
   const argNames = wrappedMethodsArgNames[key] as string[];
 
-  return Object.fromEntries(argNames.map((name, index) => [name, structuredClone(args[index])]));
+  return Object.fromEntries(argNames.map((name, index) => [name, structuredClone(args[index])])) as Record<string, unknown>;
 }
 
-const wrappedMethods: any = {
-  isConnected() {
-    return CapacitorThermalPrinterImplementation.isConnected().then(({ state }: { state: boolean }) => state);
-  },
-  connect(...args: any[]) {
-    return CapacitorThermalPrinterImplementation.connect(...args).then((result: unknown) => result ?? null)
+type ConnectionIdResolver = () => string;
+
+const connectionQueues = new Map<string, CallablePromise<void>[] >();
+const sessions = new Map<string, PrinterSession>();
+let activeConnectionId: string | null = null;
+
+function ensureQueue(connectionId: string) {
+  let queue = connectionQueues.get(connectionId);
+  if (!queue) {
+    queue = [];
+    connectionQueues.set(connectionId, queue);
   }
-};
 
-for (const key in wrappedMethodsArgNames) {
-  wrappedMethods[key] = (...args: any[]) => {
-    // Capture and clone the arguments before anything.
-    const options = mapArgs(key, args);
-
-    const trailingLock = callQueue.pop();
-    const lock = new CallablePromise<void>();
-    callQueue.push(lock);
-
-    const promise = Promise.resolve(trailingLock).then(async () => {
-      try {
-        await CapacitorThermalPrinterImplementation[key](await options);
-      } finally {
-        lock.resolve();
-      }
-    });
-    if (key === 'write') return promise;
-
-    return CapacitorThermalPrinter;
-  };
+  return queue;
 }
 
-/// ! To preserve the builder pattern while maintaining thread safety,
-/// ! each method call is queued asynchronously before being executed.
-/// ! However, a synchronous reference to the object is returned immediately
-/// ! achieving our target of a builder pattern!
-const callQueue: CallablePromise<void>[] = [];
-const CapacitorThermalPrinter = new Proxy(
-  {},
-  {
-    get(_, prop) {
-      if (prop in wrappedMethods) {
-        return wrappedMethods[prop];
+function createSession(connectionIdResolver: ConnectionIdResolver): PrinterSession {
+  const session: Record<string, any> = {};
+  const sessionProxy = session as PrinterSession;
+
+  for (const key in wrappedMethodsArgNames) {
+    session[key] = (...args: any[]) => {
+      const connectionId = connectionIdResolver();
+      const queue = ensureQueue(connectionId);
+      const trailingLock = queue.pop();
+      const lock = new CallablePromise<void>();
+      queue.push(lock);
+
+      const promise = Promise.resolve(trailingLock)
+        .then(async () => {
+          const mappedArgs = await Promise.resolve(mapArgs(key, args));
+          const payload = {
+            connectionId,
+            ...mappedArgs,
+          };
+          return CapacitorThermalPrinterImplementation[key](payload);
+        })
+        .finally(() => {
+          lock.resolve();
+        });
+
+      if (key === 'write') {
+        return promise;
       }
 
-      return CapacitorThermalPrinterImplementation[prop];
-    },
+      return sessionProxy;
+    };
+  }
+
+  return sessionProxy;
+}
+
+function ensureSession(connectionId: string) {
+  let session = sessions.get(connectionId);
+  if (!session) {
+    session = createSession(() => connectionId);
+    sessions.set(connectionId, session);
+  }
+
+  ensureQueue(connectionId);
+
+  return session;
+}
+
+function clearSession(connectionId: string) {
+  sessions.delete(connectionId);
+  const queue = connectionQueues.get(connectionId);
+  if (queue) {
+    for (const lock of queue) {
+      lock.resolve();
+    }
+  }
+  connectionQueues.delete(connectionId);
+  if (activeConnectionId === connectionId) {
+    activeConnectionId = sessions.size ? Array.from(sessions.keys())[0] ?? null : null;
+  }
+}
+
+function resolveConnectionId(preferred?: string | null): string {
+  if (preferred) {
+    return preferred;
+  }
+
+  if (activeConnectionId) {
+    return activeConnectionId;
+  }
+
+  if (sessions.size === 1) {
+    return Array.from(sessions.keys())[0];
+  }
+
+  throw new Error('No active printer connection. Set an active connection or pass a connectionId.');
+}
+
+const defaultSession = createSession(() => resolveConnectionId());
+
+const CapacitorThermalPrinter = Object.assign(defaultSession as CapacitorThermalPrinterPlugin, {
+  async connect(options: { address: string }) {
+    const result = (await CapacitorThermalPrinterImplementation.connect(options)) as PrinterConnection | null;
+    if (result) {
+      ensureSession(result.connectionId);
+      if (!activeConnectionId) {
+        activeConnectionId = result.connectionId;
+      }
+    }
+
+    return result;
   },
-) as CapacitorThermalPrinterPlugin;
+  async disconnect(options?: DisconnectOptions) {
+    const connectionId = resolveConnectionId(options?.connectionId ?? null);
+    await CapacitorThermalPrinterImplementation.disconnect({ connectionId });
+    clearSession(connectionId);
+  },
+  async isConnected(options?: IsConnectedOptions) {
+    const payload: Record<string, unknown> = {};
+    if (options?.connectionId) {
+      payload.connectionId = options.connectionId;
+    }
+    const { state } = await CapacitorThermalPrinterImplementation.isConnected(payload);
+    return Boolean(state);
+  },
+  async listConnections() {
+    const { connections } = (await CapacitorThermalPrinterImplementation.listConnections()) as {
+      connections: PrinterConnection[];
+    };
+
+    for (const connection of connections) {
+      ensureSession(connection.connectionId);
+    }
+
+    if (!activeConnectionId && connections.length > 0) {
+      activeConnectionId = connections[0].connectionId;
+    }
+
+    return { connections };
+  },
+  useConnection(connectionId: string) {
+    const session = ensureSession(connectionId);
+    return session;
+  },
+  setActiveConnection(connectionId: string | null) {
+    if (connectionId === null) {
+      activeConnectionId = null;
+      return;
+    }
+
+    if (!sessions.has(connectionId)) {
+      throw new Error(`Unknown connectionId: ${connectionId}`);
+    }
+
+    activeConnectionId = connectionId;
+  },
+  getActiveConnection() {
+    return activeConnectionId;
+  },
+  startScan: (...args: Parameters<typeof CapacitorThermalPrinterImplementation.startScan>) =>
+    CapacitorThermalPrinterImplementation.startScan(...args),
+  stopScan: (...args: Parameters<typeof CapacitorThermalPrinterImplementation.stopScan>) =>
+    CapacitorThermalPrinterImplementation.stopScan(...args),
+  addListener: CapacitorThermalPrinterImplementation.addListener.bind(CapacitorThermalPrinterImplementation),
+}) as CapacitorThermalPrinterPlugin;
+
+// Keep internal bookkeeping in sync with native events.
+CapacitorThermalPrinterImplementation.addListener('connected', (device: PrinterConnection) => {
+  ensureSession(device.connectionId);
+  if (!activeConnectionId) {
+    activeConnectionId = device.connectionId;
+  }
+});
+
+CapacitorThermalPrinterImplementation.addListener(
+  'disconnected',
+  (data: { connectionId: string | undefined }) => {
+    if (!data?.connectionId) {
+      return;
+    }
+    clearSession(data.connectionId);
+  },
+);
 
 export * from './definitions';
 export { CapacitorThermalPrinter };

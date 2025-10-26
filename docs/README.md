@@ -8,6 +8,8 @@
 
 - [BluetoothDevice](interfaces/BluetoothDevice.md)
 - [CapacitorThermalPrinterPlugin](interfaces/CapacitorThermalPrinterPlugin.md)
+- [PrinterConnection](interfaces/PrinterConnection.md)
+- [PrinterSession](interfaces/PrinterSession.md)
 
 ## Type Aliases
 

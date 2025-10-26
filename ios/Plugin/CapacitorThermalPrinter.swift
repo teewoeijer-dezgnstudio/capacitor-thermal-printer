@@ -31,19 +31,163 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         BarcodeTypeCODABAR,
         BarcodeTypeCODE128,
     ];
-
-    let manager: PrinterManager = PrinterManager.createESC();
     let blueToothPI = BlueToothFactory.create(BlueToothKind_Ble)!
-    
-    var cmd = ESCCmd();
-    var textSetting = TextSetting();
-    var bitmapSetting = BitmapSetting();
-    var dataCodeSetting = BarcodeSetting();
-   
+
     var isScanning = false;
     var discoveryFinish: DispatchWorkItem?;
-    var connectTimeout: DispatchWorkItem?;
-    var disconnectNotificationGuard = false;
+    var connectionsById: [String: PrinterConnectionContext] = [:]
+    var connectionsByAddress: [String: PrinterConnectionContext] = [:]
+    var pendingConnectionsByAddress: [String: PrinterConnectionContext] = [:]
+    var pendingCallsById: [String: CAPPluginCall] = [:]
+    var connectTimeouts: [String: DispatchWorkItem] = [:]
+
+    class PrinterConnectionContext {
+        let connectionId = UUID().uuidString
+        let address: String
+        let manager: PrinterManager
+        var name: String?
+    var cmd: ESCCmd = ESCCmd()
+    var textSetting: TextSetting = TextSetting()
+    var bitmapSetting: BitmapSetting = BitmapSetting()
+    var dataCodeSetting: BarcodeSetting = BarcodeSetting()
+    var dpiUnits: Int = 8
+
+        init(address: String) {
+            self.address = address
+            self.manager = PrinterManager.createESC()
+            resetCommand()
+            resetFormattingState()
+        }
+
+        func resetCommand() {
+            cmd = ESCCmd()
+            cmd.encodingType = Encoding_UTF8
+        }
+
+        func resetFormattingState() {
+            textSetting = TextSetting()
+            textSetting.alignmode = Align_NoSetting
+            textSetting.isTimes_Wide = Set_DisEnable
+            textSetting.isTimes_Heigh = Set_DisEnable
+            textSetting.isUnderline = Set_DisEnable
+            textSetting.isBold = Set_DisEnable
+
+            bitmapSetting = BitmapSetting()
+            bitmapSetting.alignmode = Align_NoSetting
+            bitmapSetting.limitWidth = 48 * 8
+
+            dataCodeSetting = BarcodeSetting()
+            dataCodeSetting.alignmode = Align_NoSetting
+            dataCodeSetting.coord.width = 3
+            dataCodeSetting.coord.height = 72
+            dataCodeSetting.high = 25
+            dpiUnits = 8
+        }
+
+        func toDictionary() -> [String: Any?] {
+            return [
+                "connectionId": connectionId,
+                "address": address,
+                "name": name
+            ]
+        }
+    }
+    @objc func listConnections(_ call: CAPPluginCall) {
+        var activeConnections: [[String: Any?]] = []
+        var disconnected: [PrinterConnectionContext] = []
+
+        for context in connectionsById.values {
+            if isContextConnected(context) {
+                activeConnections.append(context.toDictionary())
+            } else {
+                disconnected.append(context)
+            }
+        }
+
+        for context in disconnected {
+            context.manager.currentPrinter.close()
+            removeContext(context)
+            notifyListeners("disconnected", data: disconnectedPayload(context))
+        }
+
+        call.resolve(["connections": activeConnections])
+    }
+
+    func context(for call: CAPPluginCall, requireConnected: Bool = true) -> PrinterConnectionContext? {
+        var context: PrinterConnectionContext?
+        if let connectionId = call.getString("connectionId") {
+            context = connectionsById[connectionId]
+        } else if connectionsById.count == 1 {
+            context = connectionsById.values.first
+        }
+
+        guard let resolved = context else {
+            call.reject("Unknown printer connection. Provide a valid connectionId.")
+            return nil
+        }
+
+        if requireConnected && !resolved.manager.currentPrinter.isOpen {
+            call.reject("Printer is not connected!")
+            return nil
+        }
+
+        return resolved
+    }
+
+    func applyDefaultFormatting(_ context: PrinterConnectionContext) {
+        context.resetFormattingState()
+        appendAlignment(context, alignment: 0)
+        appendLineSpacing(context, spacing: 30)
+        appendCharSpacing(context, spacing: 1)
+    }
+
+    func appendAlignment(_ context: PrinterConnectionContext, alignment: Int) {
+        var alignment = alignment
+        if alignment > 2 || alignment < 0 {
+            alignment = 0
+        }
+        context.cmd.append(Data([27, 97, UInt8(alignment)]))
+    }
+
+    func appendLineSpacing(_ context: PrinterConnectionContext, spacing: Int) {
+        var spacing = spacing
+        if spacing < 0 { spacing = 0 }
+        if spacing > 255 { spacing = 255 }
+        context.cmd.append(Data([27, 51, UInt8(spacing)]))
+    }
+
+    func appendCharSpacing(_ context: PrinterConnectionContext, spacing: Int) {
+        var spacing = spacing
+        if spacing < 0 { spacing = 0 }
+        if spacing > 30 { spacing = 30 }
+        context.cmd.append(Data([27, 32, UInt8(spacing)]))
+    }
+
+    func isContextConnected(_ context: PrinterConnectionContext?) -> Bool {
+        guard let context = context else { return false }
+        guard context.manager.currentPrinter.isOpen else { return false }
+
+        context.manager.currentPrinter.write(Data())
+        return context.manager.currentPrinter.isOpen
+    }
+
+    func disconnectedPayload(_ context: PrinterConnectionContext) -> [String: Any?] {
+        return [
+            "connectionId": context.connectionId,
+            "address": context.address,
+            "name": context.name
+        ]
+    }
+
+    func removeContext(_ context: PrinterConnectionContext) {
+        connectionsById.removeValue(forKey: context.connectionId)
+        connectionsByAddress.removeValue(forKey: context.address)
+        pendingConnectionsByAddress.removeValue(forKey: context.address)
+        if let timeout = connectTimeouts.removeValue(forKey: context.connectionId) {
+            timeout.cancel()
+        }
+        pendingCallsById.removeValue(forKey: context.connectionId)
+    }
     
     public override init() {
         super.init()
@@ -86,29 +230,49 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
                 ])
                 break;
             case NSNotification.Name.PrinterConnected:
-                if notification.object == nil {
-                    break;
-                }
-                if (notification.object as! ObserverObj?)?.msgobj == nil {
-                    break;
-                }
-                
-                let pi = ((notification.object as! ObserverObj).msgobj as! RTBlueToothPI);
-                
-                self.connectTimeout?.perform();
+                guard
+                    let observer = notification.object as? ObserverObj,
+                    let pi = observer.msgobj as? RTBlueToothPI
+                else { break }
 
-                self.notifyListeners("connected", data: [
-                    "address": pi.address,
-                    "name": pi.name,
-                ]);
+                let address = pi.address
+                let context = self.pendingConnectionsByAddress.removeValue(forKey: address) ?? self.connectionsByAddress[address]
+                guard let context = context else { break }
+
+                context.name = pi.name
+                if let timeout = self.connectTimeouts.removeValue(forKey: context.connectionId) {
+                    timeout.cancel()
+                }
+
+                if let call = self.pendingCallsById.removeValue(forKey: context.connectionId) {
+                    call.resolve(context.toDictionary())
+                }
+
+                self.connectionsById[context.connectionId] = context
+                self.connectionsByAddress[address] = context
+
+                self.notifyListeners("connected", data: context.toDictionary())
                 break;
             case NSNotification.Name.PrinterDisconnected:
-                if self.disconnectNotificationGuard {
-                    self.disconnectNotificationGuard = false;
-                    break;
-                }
-                self.notifyListeners("disconnected", data: nil)
+                guard
+                    let observer = notification.object as? ObserverObj,
+                    let pi = observer.msgobj as? RTBlueToothPI
+                else { break }
 
+                let address = pi.address
+
+                if let pendingContext = self.pendingConnectionsByAddress.removeValue(forKey: address) {
+                    if let timeout = self.connectTimeouts.removeValue(forKey: pendingContext.connectionId) {
+                        timeout.cancel()
+                    }
+                    self.pendingCallsById.removeValue(forKey: pendingContext.connectionId)?.resolve()
+                    pendingContext.manager.currentPrinter.close()
+                    self.removeContext(pendingContext)
+                } else if let context = self.connectionsByAddress[address] {
+                    context.manager.currentPrinter.close()
+                    self.removeContext(context)
+                    self.notifyListeners("disconnected", data: self.disconnectedPayload(context))
+                }
                 break;
             default:
                 break;
@@ -151,274 +315,259 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
     }
 
     @objc func isConnected(_ call: CAPPluginCall) {
-        var state = manager.currentPrinter.isOpen
-        if state {
-            manager.currentPrinter.write(Data())
-
-            state = manager.currentPrinter.isOpen
+        if let connectionId = call.getString("connectionId") {
+            let state = isContextConnected(connectionsById[connectionId])
+            call.resolve(["state": state])
+            return
         }
-        call.resolve([
-            "state": state
-        ])
+
+        let state = connectionsById.values.contains { self.isContextConnected($0) }
+        call.resolve(["state": state])
     }
 
     @objc func connect(_ call: CAPPluginCall) {
-        guard let address = call.getString("address") else { call.reject("Please provide address!"); return }
-        if connectTimeout != nil {
+        guard let address = call.getString("address") else {
+            call.reject("Please provide address!")
+            return
+        }
+
+        if let existing = connectionsByAddress[address], existing.manager.currentPrinter.isOpen {
+            call.resolve(existing.toDictionary())
+            return
+        }
+
+        if pendingConnectionsByAddress[address] != nil {
             call.reject("Printer already connecting!")
             return
         }
 
-        manager.connectBLE(address: address)
+        let context = PrinterConnectionContext(address: address)
+        pendingConnectionsByAddress[address] = context
+        pendingCallsById[context.connectionId] = call
 
-        connectTimeout = DispatchWorkItem(block: {
-            () in
-            if  self.connectTimeout == nil {
-                return
+        context.manager.connectBLE(address: address)
+
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+
+            if let pending = self.pendingConnectionsByAddress.removeValue(forKey: address) {
+                self.pendingCallsById.removeValue(forKey: pending.connectionId)?.resolve()
+                pending.manager.currentPrinter.close()
+                self.removeContext(pending)
             }
-            
-            self.connectTimeout = nil;
-            
-            
-            if self.manager.currentPrinter.isOpen {
-                call.resolve([
-                    "address": self.manager.currentPrinter.printerPi.address,
-                    "name": self.manager.currentPrinter.printerPi.name,
-                ])
-            } else {
-                self.disconnectNotificationGuard = true;
-                self.manager.currentPrinter.close()
-                call.resolve()
-            }
-        })
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: connectTimeout!);
+        }
+
+        connectTimeouts[context.connectionId] = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
     }
     @objc func disconnect(_ call: CAPPluginCall) {
-        if manager.currentPrinter.isOpen {
+        guard let context = context(for: call, requireConnected: false) else { return }
+
+        if context.manager.currentPrinter.isOpen {
             blueToothPI.stopScan()
             discoveryFinish?.perform()
 
-            let devices = self.blueToothPI.getBleDevicelist() as! [RTDeviceinfo];
-            
-            let exists = devices.contains(where: { $0.uuidString == manager.currentPrinter.printerPi.address });
-            
-            manager.disconnect()
-            // Since manager.disconnect() doesn't trigger
-            // PrinterDisconnected notification if the
-            // device doesn't exist in the device list.
-            // Thus, we manually trigger the notification.
+            let devices = self.blueToothPI.getBleDevicelist() as! [RTDeviceinfo]
+            let exists = devices.contains(where: { $0.uuidString == context.manager.currentPrinter.printerPi.address })
+
+            context.manager.disconnect()
+
             if !exists {
-                self.notifyListeners("disconnected", data: nil);
+                context.manager.currentPrinter.close()
+                self.removeContext(context)
+                self.notifyListeners("disconnected", data: self.disconnectedPayload(context))
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self = self else { return }
+                    if self.connectionsById[context.connectionId] != nil && !context.manager.currentPrinter.isOpen {
+                        context.manager.currentPrinter.close()
+                        self.removeContext(context)
+                        self.notifyListeners("disconnected", data: self.disconnectedPayload(context))
+                    }
+                }
             }
 
-            
             call.resolve()
         } else {
+            self.removeContext(context)
             call.reject("Not Connected!")
         }
     }
     
     // MARK: - Text Formatting
     @objc func bold(_ call: CAPPluginCall) {
-        textSetting.isBold = parseIsEnabled(call);
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.textSetting.isBold = parseIsEnabled(call)
+        call.resolve()
     }
     @objc func underline(_ call: CAPPluginCall) {
-        textSetting.isUnderline = parseIsEnabled(call);
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.textSetting.isUnderline = parseIsEnabled(call)
+        call.resolve()
     }
     @objc func doubleWidth(_ call: CAPPluginCall) {
-        textSetting.isTimes_Wide = parseIsEnabled(call);
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.textSetting.isTimes_Wide = parseIsEnabled(call)
+        call.resolve()
     }
     @objc func doubleHeight(_ call: CAPPluginCall) {
-        textSetting.isTimes_Heigh = parseIsEnabled(call);
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.textSetting.isTimes_Heigh = parseIsEnabled(call)
+        call.resolve()
     }
     @objc func inverse(_ call: CAPPluginCall) {
-        textSetting.isInverse = parseIsEnabled(call);
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.textSetting.isInverse = parseIsEnabled(call)
+        call.resolve()
     }
     
     // MARK: - Image Formatting
-    var currentDPI = 8;
     @objc func dpi(_ call: CAPPluginCall) {
-        let dpi = call.getInt("dpi");
-        
-        currentDPI = dpi == 300 ? 12: 8;
-        call.resolve();
+        guard let context = context(for: call) else { return }
+
+        let dpi = call.getInt("dpi")
+        context.dpiUnits = dpi == 300 ? 12 : 8
+        call.resolve()
     }
     @objc func limitWidth(_ call: CAPPluginCall) {
-        let width = call.getInt("width", 1);
+        guard let context = context(for: call) else { return }
 
-        bitmapSetting.limitWidth = width * currentDPI;
-        call.resolve();
+        let width = call.getInt("width", 1)
+        context.bitmapSetting.limitWidth = width * context.dpiUnits
+        call.resolve()
     }
 
     // MARK: - Data Code Formatting
     @objc func barcodeWidth(_ call: CAPPluginCall) {
-        let width = call.getInt("width", 0);
-        dataCodeSetting.coord.width = width;
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let width = call.getInt("width", 0)
+        context.dataCodeSetting.coord.width = width
+        call.resolve()
     }
     @objc func barcodeHeight(_ call: CAPPluginCall) {
-        let height = call.getInt("height", 0);
-        dataCodeSetting.coord.height = height;
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let height = call.getInt("height", 0)
+        context.dataCodeSetting.coord.height = height
+        call.resolve()
     }
     @objc func barcodeTextPlacement(_ call: CAPPluginCall) {
-        let placement = placements.firstIndex(of: call.getString("placement", "none"));
+        guard let context = context(for: call) else { return }
+        let placement = placements.firstIndex(of: call.getString("placement", "none"))
         if let placement = placement {
-            dataCodeSetting.hriPos = placementEnumValues[placement];
-            call.resolve();
+            context.dataCodeSetting.hriPos = placementEnumValues[placement]
+            call.resolve()
         } else {
             call.reject("Invalid Placement");
         }
     }
 
     // MARK: - Hybrid Formatting
-    func _align(_ alignment: Int) {
-        var alignment = alignment;
-        if alignment > 2 || alignment < 0 {
-            alignment = 0;
-        }
-        cmd.append(Data([27, 97, UInt8(truncating: alignment as NSNumber)]))
-    }
-    func _lineSpacing(_ spacing: Int) {
-        var spacing = spacing;
-        if spacing < 0 {
-            spacing = 0;
-        }
-        if spacing > 255 {
-            spacing = 255;
-        }
-        cmd.append(Data([27, 51, UInt8(truncating: spacing as NSNumber)]))
-    }
-    func _charSpacing(_ spacing: Int) {
-        var spacing = spacing;
-        if spacing < 0 {
-            spacing = 0;
-        }
-        if spacing > 30 {
-            spacing = 30;
-        }
-        cmd.append(Data([27, 32, UInt8(truncating: spacing as NSNumber)]))
-    }
     @objc func align(_ call: CAPPluginCall) {
-        let alignmentName = call.getString("alignment", "left");
-        let alignment = alignments.firstIndex(of: alignmentName);
+        guard let context = context(for: call) else { return }
+        let alignmentName = call.getString("alignment", "left")
+        let alignment = alignments.firstIndex(of: alignmentName)
         if let alignment = alignment {
-            _align(alignment)
-            call.resolve();
+            appendAlignment(context, alignment: alignment)
+            call.resolve()
         } else {
             call.reject("Invalid Alignment");
         }
     }
     @objc func lineSpacing(_ call: CAPPluginCall) {
-        let spacing = call.getInt("lineSpacing", 0);
-        _lineSpacing(spacing)
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let spacing = call.getInt("lineSpacing", 0)
+        appendLineSpacing(context, spacing: spacing)
+        call.resolve()
     }
     @objc func charSpacing(_ call: CAPPluginCall) {
-        let spacing = call.getInt("charSpacing", 0);
-        _charSpacing(spacing)
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let spacing = call.getInt("charSpacing", 0)
+        appendCharSpacing(context, spacing: spacing)
+        call.resolve()
     }
     
     @objc func font(_ call: CAPPluginCall) {
-        let font = fonts.firstIndex(of: call.getString("font", "A"));
+        guard let context = context(for: call) else { return }
+        let font = fonts.firstIndex(of: call.getString("font", "A"))
         if let font = font {
-            textSetting.escFonttype = fontEnumValues[font];
-            dataCodeSetting.hriFonttype = fontEnumValues[font];
-            call.resolve();
+            context.textSetting.escFonttype = fontEnumValues[font]
+            context.dataCodeSetting.hriFonttype = fontEnumValues[font]
+            call.resolve()
         } else {
             call.reject("Invalid Font");
         }
     }
     @objc func clearFormatting(_ call: CAPPluginCall) {
-        textSetting = TextSetting()
-        bitmapSetting = BitmapSetting()
-        dataCodeSetting = BarcodeSetting()
-        
-        textSetting.alignmode = Align_NoSetting
-        textSetting.isTimes_Wide = Set_DisEnable
-        textSetting.isTimes_Heigh = Set_DisEnable
-        textSetting.isUnderline = Set_DisEnable
-        textSetting.isBold = Set_DisEnable
-        bitmapSetting.alignmode = Align_NoSetting
-        bitmapSetting.limitWidth = 48 * 8;
-        currentDPI = 8;
-        dataCodeSetting.alignmode = Align_NoSetting;
-        dataCodeSetting.coord.width = 3;
-        dataCodeSetting.coord.height = 72;
-        dataCodeSetting.high = 25;
-        // Reset Action Formatters
-        _align(0);
-        _lineSpacing(30);
-        _charSpacing(1);
-
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        applyDefaultFormatting(context)
+        call.resolve()
     }
     
     // MARK: - Content
     @objc func text(_ call: CAPPluginCall) {
-        let text = call.getString("text", "");
-
-        cmd.append(cmd.getTextCmd(textSetting, text: text))
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let text = call.getString("text", "")
+        context.cmd.append(context.cmd.getTextCmd(context.textSetting, text: text))
+        call.resolve()
     }
     @objc func image(_ call: CAPPluginCall) {
-        let dataurl = call.getString("image", "");
+        guard let context = context(for: call) else { return }
+        let dataurl = call.getString("image", "")
 
-        let base64: String;
+        let base64: String
         if let i = dataurl.firstIndex(of: ",") {
-            base64 = String(dataurl[dataurl.index(after: i)...]);
+            base64 = String(dataurl[dataurl.index(after: i)...])
         } else {
-            base64 = dataurl;
+            base64 = dataurl
         }
 
-        let data = Data(base64Encoded: base64);
-        if let data = data {
-            let img = UIImage(data: data);
-            cmd.append(cmd.getBitMapCmd(bitmapSetting, image: img));
-            call.resolve();
+        let data = Data(base64Encoded: base64)
+        if let data = data, let img = UIImage(data: data) {
+            context.cmd.append(context.cmd.getBitMapCmd(context.bitmapSetting, image: img))
+            call.resolve()
         } else {
-            call.reject("Invalid Image");
+            call.reject("Invalid Image")
         }
     }
     
     @objc func qr(_ call: CAPPluginCall) {
-        let data = call.getString("data", "");
+        guard let context = context(for: call) else { return }
+        let data = call.getString("data", "")
 
-        let error: UnsafeMutablePointer<PrinterCodeError> = UnsafeMutablePointer.allocate(capacity: 1);
-        let bytes = cmd.getBarCodeCmd(dataCodeSetting, codeType: BarcodeTypeQrcode, scode: data, codeError: error);
+        let error: UnsafeMutablePointer<PrinterCodeError> = UnsafeMutablePointer.allocate(capacity: 1)
+        let bytes = context.cmd.getBarCodeCmd(context.dataCodeSetting, codeType: BarcodeTypeQrcode, scode: data, codeError: error)
 
-        error.deallocate();
+        error.deallocate()
 
-        cmd.append(bytes);
-        call.resolve();
+        context.cmd.append(bytes)
+        call.resolve()
     }
     @objc func barcode(_ call: CAPPluginCall) {
-        guard let type = barcodeTypes.firstIndex(of: call.getString("type", "")) else { call.reject("Invalid Type"); return };
-        let data = call.getString("data", "");
+        guard let context = context(for: call) else { return }
+        guard let type = barcodeTypes.firstIndex(of: call.getString("type", "")) else {
+            call.reject("Invalid Type")
+            return
+        }
+        let data = call.getString("data", "")
 
-        let error: UnsafeMutablePointer<PrinterCodeError> = UnsafeMutablePointer.allocate(capacity: 1);
-        let bytes = cmd.getBarCodeCmd(dataCodeSetting, codeType: barcodeTypeEnumValues[type], scode: data, codeError: error);
+        let error: UnsafeMutablePointer<PrinterCodeError> = UnsafeMutablePointer.allocate(capacity: 1)
+        let bytes = context.cmd.getBarCodeCmd(context.dataCodeSetting, codeType: barcodeTypeEnumValues[type], scode: data, codeError: error)
 
-        error.deallocate();
+        error.deallocate()
 
-        cmd.append(bytes);
-        call.resolve();
+        context.cmd.append(bytes)
+        call.resolve()
     }
     
     @objc func raw(_ call: CAPPluginCall) {
+        guard let context = context(for: call) else { return }
         let base64 = call.getString("data");
         if let base64 = base64 {
             if let data = Data(base64Encoded: base64) {
-                cmd.append(data);
-                call.resolve();
+                context.cmd.append(data)
+                call.resolve()
             } else {
-                call.reject("Invalid Data");
+                call.reject("Invalid Data")
             }
             return;
         }
@@ -429,53 +578,59 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
             data[i] = UInt8(truncating: dataArray[i]);
         }
 
-        cmd.append(data);
-        call.resolve();
+        context.cmd.append(data)
+        call.resolve()
     }
     @objc func selfTest(_ call: CAPPluginCall) {
-        cmd.append(cmd.getSelftestCmd())
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.cmd.append(context.cmd.getSelftestCmd())
+        call.resolve()
     }
     // MARK: - Content Actions
     @objc func beep(_ call: CAPPluginCall) {
-        cmd.append(cmd.getBeepCmd(1, interval: 3))
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.cmd.append(context.cmd.getBeepCmd(1, interval: 3))
+        call.resolve()
     }
     @objc func openDrawer(_ call: CAPPluginCall) {
-        cmd.append(cmd.getOpenDrawerCmd(0, startTime: 32, endTime: 1))
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        context.cmd.append(context.cmd.getOpenDrawerCmd(0, startTime: 32, endTime: 1))
+        call.resolve()
     }
     @objc func cutPaper(_ call: CAPPluginCall) {
-        let half = call.getBool("half", false);
-        cmd.append(cmd.getCutPaperCmd(half ? CutterMode_half: CutterMode_Full))
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let half = call.getBool("half", false)
+        context.cmd.append(context.cmd.getCutPaperCmd(half ? CutterMode_half : CutterMode_Full))
+        call.resolve()
     }
     @objc func feedCutPaper(_ call: CAPPluginCall) {
-        cmd.append(Data([10 /* character code of "\n" */]))
-        cutPaper(call)
-        call.resolve();
+        guard let context = context(for: call) else { return }
+        let half = call.getBool("half", false)
+        context.cmd.append(Data([10]))
+        context.cmd.append(context.cmd.getCutPaperCmd(half ? CutterMode_half : CutterMode_Full))
+        call.resolve()
     }
 
     // MARK: Printing Actions
     @objc func begin(_ call: CAPPluginCall) {
-        cmd = ESCCmd();
-        cmd.encodingType = Encoding_UTF8;
-
-        clearFormatting(call)
+        guard let context = context(for: call) else { return }
+        context.resetCommand()
+        applyDefaultFormatting(context)
+        call.resolve()
     }
     @objc func write(_ call: CAPPluginCall) {
-        _writeRaw(call, cmd.getCmd())
+        guard let context = context(for: call) else { return }
+        _writeRaw(call, context: context, data: context.cmd.getCmd())
     }
     
     // MARK: - Utils
-    func _writeRaw(_ call: CAPPluginCall, _ data: Data?) {
-        if (!manager.currentPrinter.isOpen) {
-            call.reject("Printer is not connected!");
+    func _writeRaw(_ call: CAPPluginCall, context: PrinterConnectionContext, data: Data?) {
+        if !context.manager.currentPrinter.isOpen {
+            call.reject("Printer is not connected!")
             return
         }
-        
 
-        let escCmd = manager.createCmdClass()
+        let escCmd = context.manager.createCmdClass()
         escCmd.clear()
         escCmd.encodingType = Encoding_UTF8
         escCmd.append(escCmd.getHeaderCmd())
@@ -483,8 +638,8 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         escCmd.append(escCmd.getLFCRCmd())
         escCmd.append(escCmd.getPrintEnd()!)
         
-        NSLog("Printing to %@", self.manager.currentPrinter.printerPi.address);
-        self.manager.currentPrinter.write(escCmd.getCmd())
+        NSLog("Printing to %@", context.manager.currentPrinter.printerPi.address)
+        context.manager.currentPrinter.write(escCmd.getCmd())
         call.resolve()
     }
     func parseIsEnabled(_ call: CAPPluginCall) -> SettingMode {

@@ -1,3 +1,61 @@
+### listConnections()
+
+> **listConnections**(): `Promise`\<[`PrinterConnection`](PrinterConnection.md)[]\>
+
+#### Returns
+
+`Promise`\<[`PrinterConnection`](PrinterConnection.md)[]\>
+
+List the currently connected printers.
+
+***
+
+### useConnection()
+
+> **useConnection**(`connectionId`): [`PrinterSession`](PrinterSession.md)
+
+#### Parameters
+
+| Parameter | Type |
+| ------ | ------ |
+| `connectionId` | `string` |
+
+#### Returns
+
+[`PrinterSession`](PrinterSession.md)
+
+Get a fluent printer session bound to the provided connection identifier.
+
+***
+
+### setActiveConnection()
+
+> **setActiveConnection**(`connectionId`): `void`
+
+#### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `connectionId` | `string` \| `null` | Use `null` to clear the active selection. |
+
+#### Returns
+
+`void`
+
+Changes the connection targeted when chaining builder methods directly from the plugin instance.
+
+***
+
+### getActiveConnection()
+
+> **getActiveConnection**(): `null` \| `string`
+
+#### Returns
+
+`null` \| `string`
+
+Inspect the connection identifier the fluent builder will use by default.
+
 [**capacitor-thermal-printer**](../README.md) • **Docs**
 
 ***
@@ -5,6 +63,8 @@
 [capacitor-thermal-printer](../README.md) / CapacitorThermalPrinterPlugin
 
 # Interface: CapacitorThermalPrinterPlugin
+
+Extends [`PrinterSession`](PrinterSession.md). When the plugin methods documented below are invoked directly they operate on the currently active connection. Use [`setActiveConnection`](#setactiveconnection) or [`useConnection`](#useconnection) to target a specific printer when multiple links are established.
 
 ## Connectivity
 
@@ -15,6 +75,8 @@
 #### Returns
 
 `Promise`\<`void`\>
+
+Rejects if no connection can be resolved (for example when multiple printers are active and no `connectionId` or active connection has been selected).
 
 ***
 
@@ -30,7 +92,7 @@
 
 ### connect()
 
-> **connect**(`options`): `Promise`\<`null` \| [`BluetoothDevice`](BluetoothDevice.md)\>
+> **connect**(`options`): `Promise`\<`null` \| [`PrinterConnection`](PrinterConnection.md)\>
 
 #### Parameters
 
@@ -41,13 +103,20 @@
 
 #### Returns
 
-`Promise`\<`null` \| [`BluetoothDevice`](BluetoothDevice.md)\>
+`Promise`\<`null` \| [`PrinterConnection`](PrinterConnection.md)\>
 
 ***
 
 ### disconnect()
 
-> **disconnect**(): `Promise`\<`void`\>
+> **disconnect**(`options`?): `Promise`\<`void`\>
+
+#### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `options`? | `object` |  |
+| `options.connectionId`? | `string` | Target connection. When omitted the current active connection is used. |
 
 #### Returns
 
@@ -57,11 +126,20 @@
 
 ### isConnected()
 
-> **isConnected**(): `Promise`\<`boolean`\>
+> **isConnected**(`options`?): `Promise`\<`boolean`\>
+
+#### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `options`? | `object` |  |
+| `options.connectionId`? | `string` | Connection to query. When omitted the method returns `true` if any active connection remains. |
 
 #### Returns
 
 `Promise`\<`boolean`\>
+
+When called without a `connectionId`, the promise resolves to `true` if at least one printer remains connected.
 
 ## Event Listeners
 
@@ -135,6 +213,12 @@ Emitted when a printer is successfully connected.
 
 If you're using Angular as your framework of choice, the handler doesn't run in zone.
 
+##### Parameters
+
+| Parameter | Type |
+| ------ | ------ |
+| `device` | [`PrinterConnection`](PrinterConnection.md) |
+
 #### addListener(event, handler)
 
 > **addListener**(`event`, `handler`): `Promise`\<`PluginListenerHandle`\>
@@ -146,11 +230,20 @@ Emitted when a printer is disconnected.
 | Parameter | Type |
 | ------ | ------ |
 | `event` | `"disconnected"` |
-| `handler` | () => `void` |
+| `handler` | (`data`) => `void` |
 
 ##### Returns
 
 `Promise`\<`PluginListenerHandle`\>
+
+##### Parameters
+
+| Parameter | Type |
+| ------ | ------ |
+| `data` | `object` |
+| `data.address` | `string` |
+| `data.connectionId` | `string` |
+| `data.name`? | `undefined` \| `string` |
 
 ##### Remarks
 
