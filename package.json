@@ -13,7 +13,7 @@
     "dist/",
     "ios/Plugin/",
     "ios/Bridging-Header.h",
-    "CapacitorThermalPrinter.podspec"
+    "CapacitorThermalPrinterBluetooth.podspec"
   ],
   "author": "teewoeijer-dezgnstudio",
   "license": "MIT",
