@@ -1,6 +1,6 @@
 {
   "name": "capacitor-thermal-printer-bluetooth",
-  "version": "0.2.9",
+  "version": "0.2.13",
   "description": "High-speed, reliable bluetooth ESC thermal printer and encoder Capacitor plugin.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",

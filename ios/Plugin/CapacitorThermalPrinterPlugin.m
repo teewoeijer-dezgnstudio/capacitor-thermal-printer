@@ -9,6 +9,7 @@ CAP_PLUGIN(CapacitorThermalPrinterPlugin, "CapacitorThermalPrinter",
            CAP_PLUGIN_METHOD(isConnected, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(connect, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(disconnect, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(listConnections, CAPPluginReturnPromise);
 
            CAP_PLUGIN_METHOD(bold, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(underline, CAPPluginReturnPromise);

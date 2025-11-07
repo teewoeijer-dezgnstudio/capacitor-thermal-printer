@@ -45,6 +45,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         let connectionId = UUID().uuidString
         let address: String
         let manager: PrinterManager
+        let bluetoothPI: RTBlueToothPI
         var name: String?
     var cmd: ESCCmd = ESCCmd()
     var textSetting: TextSetting = TextSetting()
@@ -55,6 +56,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         init(address: String) {
             self.address = address
             self.manager = PrinterManager.createESC()
+            self.bluetoothPI = BlueToothFactory.create(BlueToothKind_Ble)!
             resetCommand()
             resetFormattingState()
         }
@@ -232,10 +234,10 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
             case NSNotification.Name.PrinterConnected:
                 guard
                     let observer = notification.object as? ObserverObj,
-                    let pi = observer.msgobj as? RTBlueToothPI
+                    let pi = observer.msgobj as? RTBlueToothPI,
+                    let address = pi.address
                 else { break }
 
-                let address = pi.address
                 let context = self.pendingConnectionsByAddress.removeValue(forKey: address) ?? self.connectionsByAddress[address]
                 guard let context = context else { break }
 
@@ -256,10 +258,9 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
             case NSNotification.Name.PrinterDisconnected:
                 guard
                     let observer = notification.object as? ObserverObj,
-                    let pi = observer.msgobj as? RTBlueToothPI
+                    let pi = observer.msgobj as? RTBlueToothPI,
+                    let address = pi.address
                 else { break }
-
-                let address = pi.address
 
                 if let pendingContext = self.pendingConnectionsByAddress.removeValue(forKey: address) {
                     if let timeout = self.connectTimeouts.removeValue(forKey: pendingContext.connectionId) {
@@ -345,7 +346,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         pendingConnectionsByAddress[address] = context
         pendingCallsById[context.connectionId] = call
 
-        context.manager.connectBLE(address: address)
+        context.manager.connectBLE2(address: address, blueToothPI: context.bluetoothPI)
 
         let timeout = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
