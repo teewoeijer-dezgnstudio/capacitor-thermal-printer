@@ -595,7 +595,10 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
     }
     @objc func openDrawer(_ call: CAPPluginCall) {
         guard let context = context(for: call) else { return }
-        context.cmd.append(context.cmd.getOpenDrawerCmd(0, startTime: 32, endTime: 1))
+        // ESC p m t1 t2 - Standard ESC/POS cash drawer kick command
+        // 0x1B = ESC, 0x70 = p, 0x00 = drawer pin 2
+        // 0x32 = pulse ON time (50 * 2ms = 100ms), 0x7D = pulse OFF time (125 * 2ms = 250ms)
+        context.cmd.append(Data([0x1B, 0x70, 0x00, 0x32, 0x7D]))
         call.resolve()
     }
     @objc func cutPaper(_ call: CAPPluginCall) {

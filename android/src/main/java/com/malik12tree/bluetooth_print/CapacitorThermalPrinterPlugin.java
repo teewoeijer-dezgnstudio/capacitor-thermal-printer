@@ -58,17 +58,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONException;
 
-@CapacitorPlugin(
-    name = "CapacitorThermalPrinter",
-    permissions = {
+@CapacitorPlugin(name = "CapacitorThermalPrinter", permissions = {
         @Permission(strings = { Manifest.permission.ACCESS_COARSE_LOCATION }, alias = "ACCESS_COARSE_LOCATION"),
         @Permission(strings = { Manifest.permission.ACCESS_FINE_LOCATION }, alias = "ACCESS_FINE_LOCATION"),
         @Permission(strings = { Manifest.permission.BLUETOOTH }, alias = "BLUETOOTH"),
         @Permission(strings = { Manifest.permission.BLUETOOTH_ADMIN }, alias = "BLUETOOTH_ADMIN"),
         @Permission(strings = { Manifest.permission.BLUETOOTH_SCAN }, alias = "BLUETOOTH_SCAN"),
         @Permission(strings = { Manifest.permission.BLUETOOTH_CONNECT }, alias = "BLUETOOTH_CONNECT")
-    }
-)
+})
 public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObserver {
 
     private static final String TAG = "CapacitorThermalPrinterPlugin";
@@ -158,7 +155,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
                 } else {
                     device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 }
-                if (device == null) return;
+                if (device == null)
+                    return;
                 int devType = device.getBluetoothClass().getMajorDeviceClass();
                 if (devType != BluetoothClass.Device.Major.IMAGING) {
                     return;
@@ -174,8 +172,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
                             {
                                 put("devices", getJsonDevices());
                             }
-                        }
-                    );
+                        });
             } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
                 notifyListeners("discoveryFinish", null);
                 mBluetoothAdapter.cancelDiscovery();
@@ -268,21 +265,26 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     }
 
     private void applyAlignment(ConnectionContext context, int alignment) {
-        if (alignment > 2 || alignment < 0) alignment = 0;
+        if (alignment > 2 || alignment < 0)
+            alignment = 0;
 
         context.cmd.append(new byte[] { 27, 97, (byte) alignment });
     }
 
     private void applyLineSpacing(ConnectionContext context, int spacing) {
-        if (spacing < 0) spacing = 0;
-        if (spacing > 255) spacing = 255;
+        if (spacing < 0)
+            spacing = 0;
+        if (spacing > 255)
+            spacing = 255;
 
         context.cmd.append(new byte[] { 27, 51, (byte) spacing });
     }
 
     private void applyCharSpacing(ConnectionContext context, int spacing) {
-        if (spacing < 0) spacing = 0;
-        if (spacing > 30) spacing = 30;
+        if (spacing < 0)
+            spacing = 0;
+        if (spacing > 30)
+            spacing = 30;
 
         context.cmd.append(new byte[] { 27, 32, (byte) spacing });
     }
@@ -324,7 +326,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     @SuppressLint("MissingPermission")
     public void startScan(PluginCall call) {
-        if (!bluetoothCheck(call)) return;
+        if (!bluetoothCheck(call))
+            return;
 
         if (mRegistered) {
             call.reject("Already Scanning!");
@@ -351,7 +354,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     @SuppressLint("MissingPermission")
     public void stopScan(PluginCall call) {
-        if (!bluetoothCheck(call)) return;
+        if (!bluetoothCheck(call))
+            return;
 
         boolean success = mBluetoothAdapter.cancelDiscovery();
 
@@ -380,15 +384,18 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         }
 
         boolean finalState = state;
-        call.resolve(new JSObject() {{
-            put("state", finalState);
-        }});
+        call.resolve(new JSObject() {
+            {
+                put("state", finalState);
+            }
+        });
     }
 
     @SuppressLint("MissingPermission")
     @PluginMethod
     public void connect(PluginCall call) {
-        if (!bluetoothCheck(call)) return;
+        if (!bluetoothCheck(call))
+            return;
         String address = call.getString("address");
         if (address == null) {
             call.reject("Please provide address!");
@@ -465,16 +472,19 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             notifyListeners("disconnected", payload);
         }
 
-        call.resolve(new JSObject() {{
-            put("connections", array);
-        }});
+        call.resolve(new JSObject() {
+            {
+                put("connections", array);
+            }
+        });
     }
 
-    //region Text Formatting
+    // region Text Formatting
     @PluginMethod
     public void bold(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.textSetting.setBold(parseIsEnabled(call));
         call.resolve();
@@ -483,7 +493,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void underline(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.textSetting.setUnderline(parseIsEnabled(call));
         call.resolve();
@@ -492,7 +503,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void doubleWidth(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.textSetting.setDoubleWidth(parseIsEnabled(call));
         call.resolve();
@@ -501,7 +513,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void doubleHeight(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.textSetting.setDoubleHeight(parseIsEnabled(call));
         call.resolve();
@@ -510,19 +523,21 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void inverse(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.textSetting.setIsAntiWhite(parseIsEnabled(call));
         call.resolve();
     }
 
-    //endregion
+    // endregion
 
-    //region Image Formatting
+    // region Image Formatting
     @PluginMethod
     public void dpi(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         Integer dpi = call.getInt("dpi");
         if (dpi == null) {
@@ -536,7 +551,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void limitWidth(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         Integer width = call.getInt("width");
         if (width == null) {
@@ -547,13 +563,14 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         call.resolve();
     }
 
-    //    endregion
+    // endregion
 
-    //region Hybrid Formatting
+    // region Hybrid Formatting
     @PluginMethod
     public void align(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String alignmentName = call.getString("alignment");
         int alignment = alignments.indexOf(alignmentName);
@@ -569,7 +586,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void lineSpacing(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         int spacing = call.getInt("lineSpacing", 0);
         applyLineSpacing(context, spacing);
@@ -579,7 +597,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void charSpacing(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         int spacing = call.getInt("charSpacing", 0);
         applyCharSpacing(context, spacing);
@@ -589,7 +608,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void font(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String fontName = call.getString("font", "A");
         int font = fonts.indexOf(fontName);
@@ -606,33 +626,38 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void clearFormatting(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         applyDefaultFormatting(context);
         call.resolve();
     }
 
-    //endregion
+    // endregion
 
-    //region Data Code Formatting
+    // region Data Code Formatting
 
     @PluginMethod
     public void barcodeWidth(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         Integer width = call.getInt("width", 0);
-        if (width != null) context.barcodeSetting.setBarcodeWidth(width);
+        if (width != null)
+            context.barcodeSetting.setBarcodeWidth(width);
         call.resolve();
     }
 
     @PluginMethod
     public void barcodeHeight(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         Integer height = call.getInt("height");
-        if (height != null) context.barcodeSetting.setHeightInDot(height);
+        if (height != null)
+            context.barcodeSetting.setHeightInDot(height);
 
         call.resolve();
     }
@@ -640,7 +665,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void barcodeTextPlacement(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String placementName = call.getString("placement");
         int placement = placements.indexOf(placementName);
@@ -653,19 +679,22 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         call.resolve();
     }
 
-    //endregion
+    // endregion
 
-    //region Content
+    // region Content
     @PluginMethod
     public void text(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String text = call.getString("text");
 
         try {
-            if (text != null) context.cmd.append(context.cmd.getTextCmd(context.textSetting, text, "UTF-8"));
-        } catch (UnsupportedEncodingException ignored) {}
+            if (text != null)
+                context.cmd.append(context.cmd.getTextCmd(context.textSetting, text, "UTF-8"));
+        } catch (UnsupportedEncodingException ignored) {
+        }
         call.resolve();
     }
 
@@ -673,7 +702,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void image(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String image = call.getString("image");
 
@@ -683,10 +713,10 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             if (image != null) {
                 byte[] d = Base64.getDecoder().decode(image.substring(image.indexOf(",") + 1));
                 context.cmd.append(
-                    context.cmd.getBitmapCmd(context.bitmapSetting, BitmapFactory.decodeByteArray(d, 0, d.length))
-                );
+                        context.cmd.getBitmapCmd(context.bitmapSetting, BitmapFactory.decodeByteArray(d, 0, d.length)));
             }
-        } catch (SdkException ignored) {}
+        } catch (SdkException ignored) {
+        }
         call.resolve();
     }
 
@@ -694,7 +724,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void raw(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String base64 = call.getString("data");
         if (base64 != null) {
@@ -731,19 +762,22 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void qr(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String data = call.getString("data", "");
         try {
             context.cmd.append(context.cmd.getBarcodeCmd(BarcodeType.QR_CODE, context.barcodeSetting, data));
-        } catch (SdkException ignored) {}
+        } catch (SdkException ignored) {
+        }
         call.resolve();
     }
 
     @PluginMethod
     public void barcode(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         String typeName = call.getString("type");
 
@@ -763,7 +797,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
 
         try {
             context.cmd.append(context.cmd.getBarcodeCmd(type, context.barcodeSetting, data));
-        } catch (SdkException ignored) {}
+        } catch (SdkException ignored) {
+        }
 
         call.resolve();
     }
@@ -771,19 +806,21 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void selfTest(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.cmd.append(context.cmd.getSelfTestCmd());
         call.resolve();
     }
 
-    //endregion
+    // endregion
 
-    //region Content Actions
+    // region Content Actions
     @PluginMethod
     public void beep(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.cmd.append(context.cmd.getBeepCmd());
         call.resolve();
@@ -792,16 +829,22 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void openDrawer(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
-        context.cmd.append(context.cmd.getOpenMoneyBoxCmd());
+        // ESC p m t1 t2 - Standard ESC/POS cash drawer kick command
+        // 0x1B = ESC, 0x70 = p, 0x00 = drawer pin 2
+        // 0x32 = pulse ON time (50 * 2ms = 100ms), 0x7D = pulse OFF time (125 * 2ms =
+        // 250ms)
+        context.cmd.append(new byte[] { 0x1B, 0x70, 0x00, 0x32, 0x7D });
         call.resolve();
     }
 
     @PluginMethod
     public void cutPaper(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         boolean half = Boolean.TRUE.equals(call.getBoolean("half", false));
         context.cmd.append(half ? context.cmd.getHalfCutCmd() : context.cmd.getAllCutCmd());
@@ -812,7 +855,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void feedCutPaper(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         boolean half = Boolean.TRUE.equals(call.getBoolean("half", false));
         context.cmd.append(new byte[] { (byte) '\n' });
@@ -820,13 +864,14 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         call.resolve();
     }
 
-    //endregion
+    // endregion
 
-    //region Printing Actions
+    // region Printing Actions
     @PluginMethod
     public void begin(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.cmd = new EscCmd();
         applyDefaultFormatting(context);
@@ -836,19 +881,22 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     @PluginMethod
     public void write(PluginCall call) {
         ConnectionContext context = resolveContext(call, true);
-        if (context == null) return;
+        if (context == null)
+            return;
 
         _writeRaw(call, context, context.cmd.getAppendCmds());
     }
 
-    //endregion
+    // endregion
 
-    //region Utils
+    // region Utils
     SettingEnum parseIsEnabled(PluginCall call) {
-        if ("default".equals(call.getString("enabled"))) return SettingEnum.NoSetting;
+        if ("default".equals(call.getString("enabled")))
+            return SettingEnum.NoSetting;
 
         Boolean enabled = call.getBoolean("enabled", true);
-        if (enabled == null) return SettingEnum.NoSetting;
+        if (enabled == null)
+            return SettingEnum.NoSetting;
 
         return enabled ? SettingEnum.Enable : SettingEnum.Disable;
     }
@@ -896,7 +944,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     }
 
     private boolean hasBluetoothPermission() {
-        //        return getPermissionState("bluetooth") == PermissionState.GRANTED;
+        // return getPermissionState("bluetooth") == PermissionState.GRANTED;
         for (String permission : bluetoothPermissions) {
             if (getPermissionState(permission) != PermissionState.GRANTED) {
                 return false;
@@ -910,7 +958,8 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     protected void permissionCallback(PluginCall call) {
         if (hasBluetoothPermission()) {
             try {
-                CapacitorThermalPrinterPlugin.class.getMethod(call.getMethodName(), PluginCall.class).invoke(this, call);
+                CapacitorThermalPrinterPlugin.class.getMethod(call.getMethodName(), PluginCall.class).invoke(this,
+                        call);
             } catch (Exception e) {
                 call.reject("Bluetooth method doesn't exit?!");
             }
@@ -924,13 +973,12 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         JSArray array = new JSArray();
         for (BluetoothDevice device : devices) {
             array.put(
-                new JSObject() {
-                    {
-                        put("name", device.getName());
-                        put("address", device.getAddress());
-                    }
-                }
-            );
+                    new JSObject() {
+                        {
+                            put("name", device.getName());
+                            put("address", device.getAddress());
+                        }
+                    });
         }
 
         return array;
@@ -992,6 +1040,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
     }
 
     @Override
-    public void printerReadMsgCallback(PrinterInterface printerInterface, byte[] bytes) {}
-    //endregion
+    public void printerReadMsgCallback(PrinterInterface printerInterface, byte[] bytes) {
+    }
+    // endregion
 }
