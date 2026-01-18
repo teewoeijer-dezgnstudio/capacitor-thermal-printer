@@ -103,6 +103,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         TextSetting textSetting;
         BitmapSetting bitmapSetting;
         BarcodeSetting barcodeSetting;
+        String encoding = "GBK"; // Default to GBK for best Chinese character support
 
         ConnectionContext(BluetoothDevice device) {
             this.device = device;
@@ -402,6 +403,12 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             return;
         }
 
+        // Get encoding parameter, default to GBK for best Chinese character support
+        String encoding = call.getString("encoding", "GBK");
+        if (!encoding.equals("GBK") && !encoding.equals("UTF-8")) {
+            encoding = "GBK"; // Default to GBK if invalid encoding provided
+        }
+
         ConnectionContext existing = connectionsByAddress.get(address);
         if (existing != null && existing.printer.getConnectState() == ConnectStateEnum.Connected) {
             call.resolve(existing.toJson());
@@ -414,11 +421,12 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         }
 
         BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
-        Log.d(TAG, "Connecting to " + device);
+        Log.d(TAG, "Connecting to " + device + " with encoding: " + encoding);
 
         ConnectionContext context;
         try {
             context = new ConnectionContext(device);
+            context.encoding = encoding; // Set the encoding for this connection
         } catch (IllegalStateException e) {
             call.reject("Failed to create printer interface!");
             return;
@@ -527,6 +535,23 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
             return;
 
         context.textSetting.setIsAntiWhite(parseIsEnabled(call));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setEncoding(PluginCall call) {
+        ConnectionContext context = resolveContext(call, true);
+        if (context == null)
+            return;
+
+        String encoding = call.getString("encoding", "GBK");
+        if (!encoding.equals("GBK") && !encoding.equals("UTF-8")) {
+            call.reject("Invalid encoding. Use 'GBK' or 'UTF-8'.");
+            return;
+        }
+
+        context.encoding = encoding;
+        Log.d(TAG, "Encoding set to: " + encoding + " for connection: " + context.connectionId);
         call.resolve();
     }
 
@@ -692,7 +717,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
 
         try {
             if (text != null)
-                context.cmd.append(context.cmd.getTextCmd(context.textSetting, text, "UTF-8"));
+                context.cmd.append(context.cmd.getTextCmd(context.textSetting, text, context.encoding));
         } catch (UnsupportedEncodingException ignored) {
         }
         call.resolve();
@@ -911,7 +936,7 @@ public class CapacitorThermalPrinterPlugin extends Plugin implements PrinterObse
         CmdFactory escFac = new EscFactory();
         Cmd escCmd = escFac.create();
         escCmd.append(escCmd.getHeaderCmd());
-        escCmd.setChartsetName("UTF-8");
+        escCmd.setChartsetName(context.encoding);
         escCmd.append(data);
         escCmd.append(escCmd.getLFCRCmd());
         escCmd.append(escCmd.getLFCRCmd());

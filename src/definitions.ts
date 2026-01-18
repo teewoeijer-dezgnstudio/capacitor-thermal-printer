@@ -6,6 +6,12 @@ export const PrinterFonts = ['A', 'B'] as const;
 export const BarcodeTextPlacements = ['none', 'above', 'below', 'both'] as const;
 export const BarcodeTypes = ['UPC_A', 'EAN8', 'EAN13', 'CODE39', 'ITF', 'CODABAR', 'CODE128'] as const;
 export const DataCodeTypes = ['QR', ...BarcodeTypes] as const;
+/**
+ * Available character encodings for printing.
+ * - `GBK`: Chinese GB2312/GBK encoding - best compatibility with most Chinese thermal printers.
+ * - `UTF-8`: Unicode UTF-8 encoding - works with newer/high-end printers.
+ */
+export const PrinterEncodings = ['GBK', 'UTF-8'] as const;
 
 /**
  * When `"default"`, uses default internal printer settings.
@@ -22,6 +28,12 @@ export type BarcodeTextPlacement = (typeof BarcodeTextPlacements)[number];
 export type PrinterFont = (typeof PrinterFonts)[number];
 export type BarcodeType = (typeof BarcodeTypes)[number];
 export type DataCodeType = (typeof DataCodeTypes)[number];
+/**
+ * Character encoding type for printing.
+ * - `GBK`: Best for Chinese thermal printers (default).
+ * - `UTF-8`: For newer printers with UTF-8 support.
+ */
+export type PrinterEncoding = (typeof PrinterEncodings)[number];
 export type Base64Encodable = string | Blob | BufferSource | number[];
 
 export interface BluetoothDevice {
@@ -57,6 +69,17 @@ export interface PrinterSession {
   barcodeWidth(width: number): PrinterSession;
   barcodeHeight(height: number): PrinterSession;
   barcodeTextPlacement(placement: BarcodeTextPlacement): PrinterSession;
+  /**
+   * Sets the character encoding for text printing.
+   *
+   * @param encoding - The encoding to use. Defaults to 'GBK' for best Chinese character support.
+   *
+   * @see {@linkcode PrinterEncoding}
+   * @see {@linkcode PrinterEncodings}
+   *
+   * @category Text Formatting
+   */
+  setEncoding(encoding: PrinterEncoding): PrinterSession;
   text(text: string): PrinterSession;
   image(data: Base64Encodable): PrinterSession;
   qr(data: string): PrinterSession;
@@ -83,7 +106,15 @@ export interface CapacitorThermalPrinterPlugin extends PrinterSession {
   /**
    * @category Connectivity
    */
-  connect(options: { address: string }): Promise<PrinterConnection | null>;
+  /**
+   * Connect to a thermal printer.
+   *
+   * @param options.address - The Bluetooth address of the printer.
+   * @param options.encoding - Character encoding to use. Defaults to 'GBK' for best Chinese character support.
+   *
+   * @category Connectivity
+   */
+  connect(options: { address: string; encoding?: PrinterEncoding }): Promise<PrinterConnection | null>;
   /**
    * @category Connectivity
    */

@@ -52,6 +52,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
     var bitmapSetting: BitmapSetting = BitmapSetting()
     var dataCodeSetting: BarcodeSetting = BarcodeSetting()
     var dpiUnits: Int = 8
+    var encoding: EncodingType = Encoding_GBK // Default to GBK for best Chinese character support
 
         init(address: String) {
             self.address = address
@@ -63,7 +64,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
 
         func resetCommand() {
             cmd = ESCCmd()
-            cmd.encodingType = Encoding_UTF8
+            cmd.encodingType = encoding
         }
 
         func resetFormattingState() {
@@ -343,6 +344,16 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
         }
 
         let context = PrinterConnectionContext(address: address)
+        
+        // Get encoding parameter, default to GBK for best Chinese character support
+        if let encodingStr = call.getString("encoding") {
+            if encodingStr == "UTF-8" {
+                context.encoding = Encoding_UTF8
+            } else {
+                context.encoding = Encoding_GBK
+            }
+        }
+        
         pendingConnectionsByAddress[address] = context
         pendingCallsById[context.connectionId] = call
 
@@ -419,6 +430,21 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
     @objc func inverse(_ call: CAPPluginCall) {
         guard let context = context(for: call) else { return }
         context.textSetting.isInverse = parseIsEnabled(call)
+        call.resolve()
+    }
+    @objc func setEncoding(_ call: CAPPluginCall) {
+        guard let context = context(for: call) else { return }
+        let encodingStr = call.getString("encoding", "GBK")
+        if encodingStr == "UTF-8" {
+            context.encoding = Encoding_UTF8
+        } else if encodingStr == "GBK" {
+            context.encoding = Encoding_GBK
+        } else {
+            call.reject("Invalid encoding. Use 'GBK' or 'UTF-8'.")
+            return
+        }
+        // Also update the current command's encoding
+        context.cmd.encodingType = context.encoding
         call.resolve()
     }
     
@@ -636,7 +662,7 @@ public class CapacitorThermalPrinterPlugin: CAPPlugin {
 
         let escCmd = context.manager.createCmdClass()
         escCmd.clear()
-        escCmd.encodingType = Encoding_UTF8
+        escCmd.encodingType = context.encoding
         escCmd.append(escCmd.getHeaderCmd())
         escCmd.append(data)
         escCmd.append(escCmd.getLFCRCmd())

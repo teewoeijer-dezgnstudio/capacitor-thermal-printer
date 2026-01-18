@@ -1,6 +1,6 @@
 {
   "name": "capacitor-thermal-printer-bluetooth",
-  "version": "0.2.13",
+  "version": "0.2.16",
   "description": "High-speed, reliable bluetooth ESC thermal printer and encoder Capacitor plugin.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -47,7 +47,7 @@
     "prettier": "prettier \"src/**/*.{css,html,ts,js}\" \"android/src/main/**/*.java\" --plugin=./node_modules/prettier-plugin-java/dist/index.js",
     "swiftlint": "node-swiftlint",
     "docs": "npx typedoc",
-    "build": "npm run clean && npm run docs && tsc && rollup -c rollup.config.js",
+    "build": "npm run clean && tsc && rollup -c rollup.config.js",
     "clean": "rimraf ./dist",
     "watch": "tsc --watch",
     "prepublishOnly": "npm run build"

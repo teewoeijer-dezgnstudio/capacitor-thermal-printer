@@ -40,6 +40,7 @@ const wrappedMethodsArgNames = {
   lineSpacing: ['lineSpacing'],
   font: ['font'],
   clearFormatting: [],
+  setEncoding: ['encoding'],
   //#endregion
 
   //#region Content
@@ -88,7 +89,7 @@ function mapArgs(key: string, args: any[]) {
 
 type ConnectionIdResolver = () => string;
 
-const connectionQueues = new Map<string, CallablePromise<void>[] >();
+const connectionQueues = new Map<string, CallablePromise<void>[]>();
 const sessions = new Map<string, PrinterSession>();
 let activeConnectionId: string | null = null;
 
@@ -183,8 +184,13 @@ function resolveConnectionId(preferred?: string | null): string {
 const defaultSession = createSession(() => resolveConnectionId());
 
 const CapacitorThermalPrinter = Object.assign(defaultSession as CapacitorThermalPrinterPlugin, {
-  async connect(options: { address: string }) {
-    const result = (await CapacitorThermalPrinterImplementation.connect(options)) as PrinterConnection | null;
+  async connect(options: { address: string; encoding?: string }) {
+    // Default to GBK encoding for best Chinese character support
+    const connectOptions = {
+      address: options.address,
+      encoding: options.encoding || 'GBK',
+    };
+    const result = (await CapacitorThermalPrinterImplementation.connect(connectOptions)) as PrinterConnection | null;
     if (result) {
       ensureSession(result.connectionId);
       if (!activeConnectionId) {

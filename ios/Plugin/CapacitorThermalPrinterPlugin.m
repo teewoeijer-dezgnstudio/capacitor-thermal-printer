@@ -16,6 +16,7 @@ CAP_PLUGIN(CapacitorThermalPrinterPlugin, "CapacitorThermalPrinter",
            CAP_PLUGIN_METHOD(doubleWidth, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(doubleHeight, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(inverse, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(setEncoding, CAPPluginReturnPromise);
            
            CAP_PLUGIN_METHOD(barcodeWidth, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(barcodeHeight, CAPPluginReturnPromise);
